@@ -1,3 +1,9 @@
 venv/
 .venv/
 env/
+
+*.bin
+*.json
+
+scaler
+*.exe

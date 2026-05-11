@@ -1,18 +1,21 @@
-PYTHON ?= python3
+PYTHON     ?= python3
 GEN_SCRIPT ?= generate_data.py
+CXX        ?= g++
+CXXFLAGS   ?= -std=c++17 -O2 -Wall
 
 # Data generation parameters (override from CLI)
-N ?= 1000
-D ?= 12
+N     ?= 1000
+D     ?= 12
 DTYPE ?= float64
-SEED ?= 42
+SEED  ?= 42
 NOISE ?= 0.1
 OUTPUT ?= data_10M_128.bin
 
-.PHONY: help gen-data clean
+.PHONY: help build gen-data clean
 
 help:
 	@echo "Targets:"
+	@echo "  make build"
 	@echo "  make gen-data"
 	@echo "  make clean"
 	@echo ""
@@ -21,6 +24,11 @@ help:
 	@echo ""
 	@echo "Example:"
 	@echo "  make gen-data N=1000000 D=32 OUTPUT=data_1M_32.bin"
+
+build: scaler
+
+scaler: Scaler.cpp
+	$(CXX) $(CXXFLAGS) -o scaler Scaler.cpp
 
 gen-data:
 	$(PYTHON) $(GEN_SCRIPT) \
@@ -32,4 +40,4 @@ gen-data:
 		--noise $(NOISE)
 
 clean:
-	rm -f *.bin
+	rm -f *.bin scaler
