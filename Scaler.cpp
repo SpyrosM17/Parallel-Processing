@@ -1,9 +1,7 @@
 /**
  * scaler.cpp  —  Serial Reference Implementation
  * ------------------------------------------------
- * Parallel Processing Assignment, Spring 2025-2026
- * Dept. of Computer Engineering & Informatics, University of Patras
- *
+ 
  * Reads a raw binary matrix X ∈ R^{N×D} (row-major, double precision),
  * computes per-column statistics (mean, min, max, variance, std-dev),
  * then applies either StandardScaler or MinMaxScaler and writes the
