@@ -1,5 +1,5 @@
 PYTHON     ?= python3
-GEN_SCRIPT ?= generate_data.py
+GEN_SCRIPT ?= generate_data_chunks.py
 CXX        ?= g++
 
 # Flags for the SIMD version (AVX2, FMA, O3 optimization)
@@ -10,7 +10,7 @@ CXXFLAGS_SERIAL ?= -std=c++17 -O2 -Wall
 
 # Data generation parameters (override from CLI)
 N     ?= 10000000
-D     ?= 32
+D     ?= 128
 DTYPE ?= float64
 SEED  ?= 42
 NOISE ?= 0.1
@@ -62,4 +62,4 @@ run-simd: scaler_simd
 
 
 clean:
-	rm -f *.bin scaler scaler_simd
+	rm -f  scaler scaler_simd
