@@ -167,9 +167,10 @@
      const std::vector<ColStats> &stats,
      double       &compute_time)
  {
-     FILE *fin  = std::fopen(input_path,  "rb");
-     FILE *fout = std::fopen(output_path, "wb");
-     if (!fin || !fout) return false;
+    FILE *fin  = std::fopen(input_path,  "rb");
+    if (!fin) { return false; }
+    FILE *fout = std::fopen(output_path, "wb");
+    if (!fout) { std::fclose(fin); return false; }
  
      double* shift_arr = (double*)_mm_malloc(D * sizeof(double), 32);
      double* scale_arr = (double*)_mm_malloc(D * sizeof(double), 32);
@@ -276,6 +277,21 @@
      else return EXIT_FAILURE;
  
      std::printf("=== SIMD Scaler — AVX2 Implementation (Optimized) ===\n");
+     
+     // After "=== SIMD Scaler ===" printf, add:
+    double file_size_gb = static_cast<double>(N) * D * sizeof(double) / (1 << 30);
+    double block_mb     = static_cast<double>(block_rows) * D * sizeof(double) / (1 << 20);
+    std::printf("  Input:      %s\n",   input_path);
+    std::printf("  Output:     %s\n",   output_path);
+    std::printf("  N (rows):   %lld\n", N);
+    std::printf("  D (cols):   %lld\n", D);
+    std::printf("  Mode:       %s\n",   mode_str.c_str());
+    std::printf("  Block rows: %lld  (≈ %.1f MB per block)\n", block_rows, block_mb);
+    std::printf("  File size:  ≈ %.3f GB\n\n", file_size_gb);
+ 
+     // Allocate statistics array
+
+
      std::vector<ColStats> stats(static_cast<size_t>(D));
  
      double compute_time_1 = 0.0;

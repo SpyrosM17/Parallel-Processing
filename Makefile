@@ -3,7 +3,7 @@ GEN_SCRIPT ?= generate_data_chunks.py
 CXX        ?= g++
 
 # Flags for the SIMD version (AVX2, FMA, O3 optimization)
-CXXFLAGS_SIMD ?= -std=c++17 -O3 -Wall -mavx2 -mfma -march=native
+CXXFLAGS_SIMD ?= -std=c++17 -O3 -mavx2 -mfma -march=native
 
 # Flags for the Serial version (Standard O2 optimization)
 CXXFLAGS_SERIAL ?= -std=c++17 -O2 -Wall

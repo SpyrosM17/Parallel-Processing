@@ -346,8 +346,8 @@
      std::printf("  Phase 1 (stats):     %.3f s\n", t1 - t0);
      std::printf("  Phase 2 (scaling):   %.3f s\n", t3 - t2);
      std::printf("  Total:               %.3f s\n", t3 - t0);
-     std::printf("  Throughput:          %.2f GB/s  (total data read ≈ 2× input)\n",
-                 2.0 * file_size_gb / (t3 - t0));
- 
+     std::printf("  Throughput: %.2f GB/s  (total I/O ≈ 3× input: 2 reads + 1 write)\n",
+            3.0 * file_size_gb / (t3 - t0));
+            
      return EXIT_SUCCESS;
  }
