@@ -36,6 +36,7 @@
  #include <vector>
  #include <limits>
  #include <chrono>
+ #include <algorithm>
  
  /* ------------------------------------------------------------------ */
  /*  Tiny helper: wall-clock timer                                       */

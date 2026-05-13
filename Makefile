@@ -9,8 +9,8 @@ CXXFLAGS_SIMD ?= -std=c++17 -O3 -Wall -mavx2 -mfma -march=native
 CXXFLAGS_SERIAL ?= -std=c++17 -O2 -Wall
 
 # Data generation parameters (override from CLI)
-N     ?= 1000
-D     ?= 12
+N     ?= 10000000
+D     ?= 32
 DTYPE ?= float64
 SEED  ?= 42
 NOISE ?= 0.1
@@ -43,6 +43,7 @@ scaler: Scaler.cpp
 scaler_simd: Scaler_SIMD.cpp
 	$(CXX) $(CXXFLAGS_SIMD) -o scaler_simd Scaler_SIMD.cpp
 
+
 gen-data:
 	$(PYTHON) $(GEN_SCRIPT) \
 		--samples $(N) \
@@ -57,6 +58,8 @@ run-serial: scaler
 
 run-simd: scaler_simd
 	./scaler_simd $(INPUT_DATA) $(OUT_DATA) $(N) $(D) $(MODE)
+
+
 
 clean:
 	rm -f *.bin scaler scaler_simd
