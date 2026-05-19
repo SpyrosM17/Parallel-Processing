@@ -6,4 +6,6 @@ env/
 *.json
 
 scaler
+scaler_simd
+
 *.exe

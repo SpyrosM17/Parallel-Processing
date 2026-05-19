@@ -1,14 +1,17 @@
 /**
- * scaler.cpp  —  Serial Reference Implementation
+ * Scaler.cpp  —  Serial Reference Implementation
  * ------------------------------------------------
- 
+ *
  * Reads a raw binary matrix X ∈ R^{N×D} (row-major, double precision),
  * computes per-column statistics (mean, min, max, variance, std-dev),
  * then applies either StandardScaler or MinMaxScaler and writes the
  * normalised matrix to a new raw binary file.
  *
- * Processing is done block-by-block so that files larger than available
- * RAM are handled correctly (out-of-core execution).
+ * Processing is done block-by-block (out-of-core) so that files larger
+ * than available RAM are handled correctly.
+ *
+ * Timing now separately reports compute time and I/O time per phase,
+ * enabling a fair apples-to-apples comparison with the SIMD version.
  *
  * Usage:
  *   ./scaler input.bin output.bin N D mode [block_rows]
@@ -19,26 +22,24 @@
  *   D           – number of columns (features)
  *   mode        – "standard"  →  StandardScaler
  *                 "minmax"    →  MinMaxScaler
- *   block_rows  – (optional) rows per I/O block; default = 100 000
+ *   block_rows  – (optional) rows per I/O block; default = 256 000
  *
  * Build:
  *   g++ -O2 -std=c++17 -o scaler Scaler.cpp
- *   ./scaler data_10M_128.bin out_standard.bin 1000 12 standard
- *   ./scaler data_10M_128.bin out_minmax.bin 1000 12 minmax 50000
  */
 
  #include <cstdio>
  #include <cstdlib>
  #include <cstring>
  #include <cmath>
- #include <cassert>
  #include <string>
  #include <vector>
  #include <limits>
  #include <chrono>
+ #include <algorithm>
  
  /* ------------------------------------------------------------------ */
- /*  Tiny helper: wall-clock timer                                       */
+ /*  Wall-clock timer                                                    */
  /* ------------------------------------------------------------------ */
  static double now_sec()
  {
@@ -50,8 +51,8 @@
  /*  Per-column accumulators                                             */
  /* ------------------------------------------------------------------ */
  struct ColStats {
-     double sum;      /* Σ x_ij                      */
-     double sum_sq;   /* Σ x_ij²                     */
+     double sum;
+     double sum_sq;
      double min_val;
      double max_val;
      /* Derived (filled after full scan) */
@@ -62,13 +63,16 @@
  
  /* ------------------------------------------------------------------ */
  /*  Phase 1 — scan the whole file in blocks, accumulate statistics     */
+ /*  compute_time — time spent only in the inner accumulation loops     */
  /* ------------------------------------------------------------------ */
  static bool phase1_compute_stats(
      const char   *input_path,
-     long long     N,          /* total rows                            */
-     long long     D,          /* total columns                         */
-     long long     block_rows, /* rows to read per iteration            */
-     std::vector<ColStats> &stats)
+     long long     N,
+     long long     D,
+     long long     block_rows,
+     std::vector<ColStats> &stats,
+     double       &wall_time,
+     double       &compute_time)
  {
      /* Initialise accumulators */
      for (long long j = 0; j < D; ++j) {
@@ -84,11 +88,13 @@
          return false;
      }
  
-     /* Allocate one block buffer */
      std::vector<double> block(static_cast<size_t>(block_rows * D));
  
      long long rows_remaining = N;
      long long total_read     = 0;
+     compute_time = 0.0;
+ 
+     double t_wall_start = now_sec();
  
      while (rows_remaining > 0) {
          long long rows_this_block = std::min(block_rows, rows_remaining);
@@ -103,31 +109,35 @@
              return false;
          }
  
-         /* Accumulate column statistics for this block */
+         /* ---- Compute inner loop: timed separately ---- */
+         double t_c0 = now_sec();
+ 
          for (long long i = 0; i < rows_this_block; ++i) {
              const double *row = block.data() + i * D;
              for (long long j = 0; j < D; ++j) {
-                 double v        = row[j];
-                 stats[j].sum   += v;
+                 double v         = row[j];
+                 stats[j].sum    += v;
                  stats[j].sum_sq += v * v;
                  if (v < stats[j].min_val) stats[j].min_val = v;
                  if (v > stats[j].max_val) stats[j].max_val = v;
              }
          }
  
+         compute_time += (now_sec() - t_c0);
+         /* ------------------------------------------------ */
+ 
          rows_remaining -= rows_this_block;
          total_read     += rows_this_block;
      }
  
+     wall_time = now_sec() - t_wall_start;
      std::fclose(fin);
  
      /* Derive mean, variance, std-dev from accumulators */
      double inv_N = 1.0 / static_cast<double>(N);
      for (long long j = 0; j < D; ++j) {
          stats[j].mean    = stats[j].sum * inv_N;
-         /* Var = E[x²] - E[x]²  (numerically equivalent, single-pass friendly) */
          stats[j].var     = stats[j].sum_sq * inv_N - stats[j].mean * stats[j].mean;
-         /* Guard against tiny floating-point negatives due to cancellation */
          if (stats[j].var < 0.0) stats[j].var = 0.0;
          stats[j].std_dev = std::sqrt(stats[j].var);
      }
@@ -137,6 +147,7 @@
  
  /* ------------------------------------------------------------------ */
  /*  Phase 2 — re-read file, apply scaling, write output                */
+ /*  compute_time — time spent only in the inner scaling loops          */
  /* ------------------------------------------------------------------ */
  enum class ScalerMode { STANDARD, MINMAX };
  
@@ -147,7 +158,9 @@
      long long     D,
      long long     block_rows,
      ScalerMode    mode,
-     const std::vector<ColStats> &stats)
+     const std::vector<ColStats> &stats,
+     double       &wall_time,
+     double       &compute_time)
  {
      FILE *fin  = std::fopen(input_path,  "rb");
      FILE *fout = std::fopen(output_path, "wb");
@@ -162,13 +175,6 @@
          return false;
      }
  
-     /*
-      * Pre-compute per-column scale factors to avoid repeated division
-      * inside the hot loop.
-      *
-      * StandardScaler:  scale = 1 / σ_j   (set to 0 if σ_j == 0)
-      * MinMaxScaler:    scale = 1 / (max_j - min_j)  (set to 0 if range == 0)
-      */
      std::vector<double> shift(D), scale(D);
      for (long long j = 0; j < D; ++j) {
          if (mode == ScalerMode::STANDARD) {
@@ -185,6 +191,9 @@
  
      long long rows_remaining = N;
      long long total_written  = 0;
+     compute_time = 0.0;
+ 
+     double t_wall_start = now_sec();
  
      while (rows_remaining > 0) {
          long long rows_this_block = std::min(block_rows, rows_remaining);
@@ -200,13 +209,18 @@
              return false;
          }
  
-         /* Apply scaling in-place */
+         /* ---- Compute inner loop: timed separately ---- */
+         double t_c0 = now_sec();
+ 
          for (long long i = 0; i < rows_this_block; ++i) {
              double *row = block.data() + i * D;
              for (long long j = 0; j < D; ++j) {
                  row[j] = (row[j] - shift[j]) * scale[j];
              }
          }
+ 
+         compute_time += (now_sec() - t_c0);
+         /* ------------------------------------------------ */
  
          size_t written = std::fwrite(block.data(), sizeof(double), elems, fout);
          if (written != elems) {
@@ -222,6 +236,7 @@
          total_written  += rows_this_block;
      }
  
+     wall_time = now_sec() - t_wall_start;
      std::fclose(fin);
      std::fclose(fout);
      return true;
@@ -257,12 +272,11 @@
  /* ------------------------------------------------------------------ */
  int main(int argc, char *argv[])
  {
-     /* ---- Argument parsing ---- */
      if (argc < 6 || argc > 7) {
          std::fprintf(stderr,
              "Usage: %s input.bin output.bin N D mode [block_rows]\n"
              "  mode: standard | minmax\n"
-             "  block_rows: optional, default = 100000\n",
+             "  block_rows: optional, default = 256000\n",
              argv[0]);
          return EXIT_FAILURE;
      }
@@ -272,7 +286,7 @@
      long long   N           = std::atoll(argv[3]);
      long long   D           = std::atoll(argv[4]);
      std::string mode_str    = argv[5];
-     long long   block_rows  = (argc == 7) ? std::atoll(argv[6]) : 100000LL;
+     long long   block_rows  = (argc == 7) ? std::atoll(argv[6]) : 256000LL;
  
      if (N <= 0 || D <= 0) {
          std::fprintf(stderr, "[ERROR] N and D must be positive integers.\n");
@@ -295,7 +309,6 @@
          return EXIT_FAILURE;
      }
  
-     /* ---- Configuration summary ---- */
      double file_size_gb = static_cast<double>(N) * D * sizeof(double) / (1 << 30);
      double block_mb     = static_cast<double>(block_rows) * D * sizeof(double) / (1 << 20);
  
@@ -308,45 +321,46 @@
      std::printf("  Block rows: %lld  (≈ %.1f MB per block)\n", block_rows, block_mb);
      std::printf("  File size:  ≈ %.3f GB\n\n", file_size_gb);
  
-     /* ---- Allocate statistics array ---- */
      std::vector<ColStats> stats(static_cast<size_t>(D));
  
      /* ================================================================
       * PHASE 1 — compute statistics
       * ================================================================ */
      std::printf("[Phase 1] Computing per-column statistics...\n");
-     double t0 = now_sec();
+     double wall1 = 0.0, compute1 = 0.0;
  
-     if (!phase1_compute_stats(input_path, N, D, block_rows, stats)) {
+     if (!phase1_compute_stats(input_path, N, D, block_rows, stats, wall1, compute1))
          return EXIT_FAILURE;
-     }
  
-     double t1 = now_sec();
-     std::printf("[Phase 1] Done in %.3f seconds.\n", t1 - t0);
+     std::printf("[Phase 1] Done in %.3f s  (compute %.3f s, I/O %.3f s)\n",
+                 wall1, compute1, wall1 - compute1);
      print_stats(stats, D);
  
      /* ================================================================
       * PHASE 2 — scale and write
       * ================================================================ */
-     std::printf("[Phase 2] Applying %s and writing output...\n",
-                 mode_str.c_str());
-     double t2 = now_sec();
+     std::printf("[Phase 2] Applying %s and writing output...\n", mode_str.c_str());
+     double wall2 = 0.0, compute2 = 0.0;
  
      if (!phase2_scale_and_write(input_path, output_path, N, D,
-                                  block_rows, mode, stats)) {
+                                  block_rows, mode, stats, wall2, compute2))
          return EXIT_FAILURE;
-     }
  
-     double t3 = now_sec();
-     std::printf("[Phase 2] Done in %.3f seconds.\n", t3 - t2);
+     std::printf("[Phase 2] Done in %.3f s  (compute %.3f s, I/O %.3f s)\n",
+                 wall2, compute2, wall2 - compute2);
  
      /* ---- Overall timing ---- */
+     double total = wall1 + wall2;
      std::printf("\n=== Timing Summary ===\n");
-     std::printf("  Phase 1 (stats):     %.3f s\n", t1 - t0);
-     std::printf("  Phase 2 (scaling):   %.3f s\n", t3 - t2);
-     std::printf("  Total:               %.3f s\n", t3 - t0);
-     std::printf("  Throughput:          %.2f GB/s  (total data read ≈ 2× input)\n",
-                 2.0 * file_size_gb / (t3 - t0));
+     std::printf("  Phase 1 Total Wall Time : %.3f s  (Compute: %.3f s, I/O: %.3f s)\n",
+                 wall1, compute1, wall1 - compute1);
+     std::printf("  Phase 2 Total Wall Time : %.3f s  (Compute: %.3f s, I/O: %.3f s)\n",
+                 wall2, compute2, wall2 - compute2);
+     std::printf("  -----------------------------------------------\n");
+     std::printf("  Total Compute Time Only : %.3f s\n", compute1 + compute2);
+     std::printf("  Total Execution Time    : %.3f s\n", total);
+     std::printf("  Throughput (3× file)    : %.2f GB/s\n",
+                 3.0 * file_size_gb / total);
  
      return EXIT_SUCCESS;
  }
