@@ -2,6 +2,9 @@ PYTHON     ?= python3
 GEN_SCRIPT ?= generate_data_chunks.py
 CXX        ?= g++
 
+# Flags for the OpenMP version
+CXXFLAGS_OMP  ?= -std=c++17 -O3 -Wall -fopenmp
+
 # Flags for the SIMD version (AVX2, FMA, O3 optimization, pthread for std::async)
 CXXFLAGS_SIMD ?= -std=c++17 -O3 -Wall -mavx2 -mfma -march=native -pthread
 
@@ -9,41 +12,46 @@ CXXFLAGS_SIMD ?= -std=c++17 -O3 -Wall -mavx2 -mfma -march=native -pthread
 CXXFLAGS_SERIAL ?= -std=c++17 -O2 -Wall
 
 # Data generation parameters (override from CLI)
-N     ?= 10000
-D     ?= 8
+N     ?= 1000000
+D     ?= 32
 DTYPE ?= float64
 SEED  ?= 42
 NOISE ?= 0.1
 INPUT_DATA ?= data_$(N)_$(D).bin
 
 # Run parameters
-MODE ?= minmax
+MODE ?= standard
 OUT_DATA ?= out_$(N)_$(D)_$(MODE).bin
-BLOCKS ?= 2000
+BLOCKS ?= 500000
 
-.PHONY: help build gen-data clean run-serial run-simd verify
+.PHONY: help build gen-data clean run-serial run-simd run-openmp verify
 
 help:
 	@echo "Targets:"
-	@echo "  make build       - Builds both serial and SIMD executables"
-	@echo "  make scaler_serial      - Builds only the serial version"
-	@echo "  make scaler_simd - Builds only the SIMD version"
-	@echo "  make gen-data    - Generates the input binary dataset"
-	@echo "  make run-serial  - Runs the serial executable"
-	@echo "  make run-simd    - Runs the SIMD executable"
-	@echo "  make verify      - Verifies the scaler output against scikit-learn"
-	@echo "  make clean       - Removes executables and output .bin files"
+	@echo "  make build           - Builds serial, SIMD and OpenMP executables"
+	@echo "  make scaler_serial   - Builds only the serial version"
+	@echo "  make scaler_simd     - Builds only the SIMD version"
+	@echo "  make scaler_openmp   - Builds only the OpenMP version"
+	@echo "  make gen-data        - Generates the input binary dataset"
+	@echo "  make run-serial      - Runs the serial executable"
+	@echo "  make run-simd        - Runs the SIMD executable"
+	@echo "  make run-openmp      - Runs the OpenMP executable"
+	@echo "  make verify          - Verifies the scaler output against scikit-learn"
+	@echo "  make clean           - Removes executables and output .bin files"
 	@echo ""
 	@echo "Example execution:"
 	@echo "  make run-simd N=1000 D=12 INPUT_DATA=data_10M_128.bin MODE=standard BLOCKS=256000"
 
-build: scaler_serial scaler_simd
+build: scaler_serial scaler_simd scaler_openmp
 
 scaler_serial: Scaler_Serial.cpp
 	$(CXX) $(CXXFLAGS_SERIAL) -o scaler_serial Scaler_Serial.cpp
 
 scaler_simd: Scaler_SIMD.cpp
 	$(CXX) $(CXXFLAGS_SIMD) -o scaler_simd Scaler_SIMD.cpp
+
+scaler_openmp: Scaler_OpenMP.cpp
+	$(CXX) $(CXXFLAGS_OMP) -o scaler_openmp Scaler_OpenMP.cpp
 
 
 gen-data:
@@ -61,6 +69,9 @@ run-serial: scaler_serial
 run-simd: scaler_simd
 	./scaler_simd $(INPUT_DATA) $(OUT_DATA) $(N) $(D) $(MODE) $(BLOCKS)
 
+run-openmp: scaler_openmp
+	./scaler_openmp $(INPUT_DATA) $(OUT_DATA) $(N) $(D) $(MODE) $(BLOCKS)
+
 verify:
 	$(PYTHON) Verifier.py \
 		--input $(INPUT_DATA) \
@@ -72,4 +83,4 @@ verify:
 		--block-rows $(BLOCKS)
 
 clean:
-	rm -f scaler_serial scaler_simd out_*.bin
+	rm -f scaler_serial scaler_simd scaler_openmp out_*.bin
