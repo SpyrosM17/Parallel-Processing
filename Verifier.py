@@ -95,7 +95,8 @@ def main():
     parser.add_argument("--D",   type=int, required=True, help="Number of columns")
     parser.add_argument("--mode", required=True, choices=["standard", "minmax"])
     parser.add_argument("--dtype", default="float64", choices=["float32", "float64"])
-    parser.add_argument("--block-rows", type=int, default=100000,
+    parser.add_argument("--block-rows", "--blocks", type=int, default=100000,
+                        dest="block_rows",
                         help="Rows per verification block for streaming verification")
     args = parser.parse_args()
 

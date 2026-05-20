@@ -5,7 +5,7 @@ env/
 *.bin
 *.json
 
-scaler
+scaler_serial
 scaler_simd
 
 *.exe

@@ -9,24 +9,24 @@ CXXFLAGS_SIMD ?= -std=c++17 -O3 -Wall -mavx2 -mfma -march=native -pthread
 CXXFLAGS_SERIAL ?= -std=c++17 -O2 -Wall
 
 # Data generation parameters (override from CLI)
-N     ?= 5000000
-D     ?= 64
+N     ?= 10000
+D     ?= 8
 DTYPE ?= float64
 SEED  ?= 42
 NOISE ?= 0.1
 INPUT_DATA ?= data_$(N)_$(D).bin
 
 # Run parameters
-MODE ?= standard
+MODE ?= minmax
 OUT_DATA ?= out_$(N)_$(D)_$(MODE).bin
-BLOCKS ?= 500000
+BLOCKS ?= 2000
 
 .PHONY: help build gen-data clean run-serial run-simd verify
 
 help:
 	@echo "Targets:"
 	@echo "  make build       - Builds both serial and SIMD executables"
-	@echo "  make scaler      - Builds only the serial version"
+	@echo "  make scaler_serial      - Builds only the serial version"
 	@echo "  make scaler_simd - Builds only the SIMD version"
 	@echo "  make gen-data    - Generates the input binary dataset"
 	@echo "  make run-serial  - Runs the serial executable"
@@ -37,10 +37,10 @@ help:
 	@echo "Example execution:"
 	@echo "  make run-simd N=1000 D=12 INPUT_DATA=data_10M_128.bin MODE=standard BLOCKS=256000"
 
-build: scaler scaler_simd
+build: scaler_serial scaler_simd
 
-scaler: Scaler.cpp
-	$(CXX) $(CXXFLAGS_SERIAL) -o scaler Scaler.cpp
+scaler_serial: Scaler_Serial.cpp
+	$(CXX) $(CXXFLAGS_SERIAL) -o scaler_serial Scaler_Serial.cpp
 
 scaler_simd: Scaler_SIMD.cpp
 	$(CXX) $(CXXFLAGS_SIMD) -o scaler_simd Scaler_SIMD.cpp
@@ -55,8 +55,8 @@ gen-data:
 		--seed $(SEED) \
 		--noise $(NOISE)
 
-run-serial: scaler
-	./scaler $(INPUT_DATA) $(OUT_DATA) $(N) $(D) $(MODE) $(BLOCKS)
+run-serial: scaler_serial
+	./scaler_serial $(INPUT_DATA) $(OUT_DATA) $(N) $(D) $(MODE) $(BLOCKS)
 
 run-simd: scaler_simd
 	./scaler_simd $(INPUT_DATA) $(OUT_DATA) $(N) $(D) $(MODE) $(BLOCKS)
@@ -68,7 +68,8 @@ verify:
 		--N $(N) \
 		--D $(D) \
 		--mode $(MODE) \
-		--dtype $(DTYPE)
+		--dtype $(DTYPE) \
+		--block-rows $(BLOCKS)
 
 clean:
-	rm -f scaler scaler_simd out_*.bin
+	rm -f scaler_serial scaler_simd out_*.bin
