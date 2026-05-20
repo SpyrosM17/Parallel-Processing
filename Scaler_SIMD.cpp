@@ -140,9 +140,9 @@
      bool      aligned_d = (D % 4 == 0);
  
      /* ---------- prime the pump: read block 0 synchronously ---------- */
-     long long rows_remaining = N;
-     long long rows_this = std::min(block_rows, rows_remaining);
-     size_t    elems_this = static_cast<size_t>(rows_this * D);
+    long long rows_remaining = N;
+    long long rows_this = std::min(block_rows, rows_remaining);
+    size_t    elems_this = static_cast<size_t>(rows_this * D);
  
      double t_wall_start = now_sec();
      compute_time = 0.0;
@@ -346,11 +346,12 @@
          }
          compute_time += (now_sec() - t_c0);
  
-         /* write current block */
-         if (std::fwrite(buf[cur], sizeof(double), elems_this, fout) != elems_this) {
-             std::fprintf(stderr, "[ERROR] Phase 2: write failed\n");
-             std::fclose(fin); std::fclose(fout); return false;
-         }
+        /* write current block: compute actual elements for this block */
+        size_t elems_cur = static_cast<size_t>(rows_this * D);
+        if (std::fwrite(buf[cur], sizeof(double), elems_cur, fout) != elems_cur) {
+            std::fprintf(stderr, "[ERROR] Phase 2: write failed\n");
+            std::fclose(fin); std::fclose(fout); return false;
+        }
  
          /* --- wait for next read --- */
          if (rows_next > 0) {

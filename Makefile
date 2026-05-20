@@ -9,17 +9,17 @@ CXXFLAGS_SIMD ?= -std=c++17 -O3 -Wall -mavx2 -mfma -march=native -pthread
 CXXFLAGS_SERIAL ?= -std=c++17 -O2 -Wall
 
 # Data generation parameters (override from CLI)
-N     ?= 1000000
-D     ?= 32
+N     ?= 5000000
+D     ?= 64
 DTYPE ?= float64
 SEED  ?= 42
 NOISE ?= 0.1
-INPUT_DATA ?= data_10M_128.bin
+INPUT_DATA ?= data_$(N)_$(D).bin
 
 # Run parameters
 MODE ?= standard
-OUT_DATA ?= out_$(MODE).bin
-BLOCKS ?= 50000
+OUT_DATA ?= out_$(N)_$(D)_$(MODE).bin
+BLOCKS ?= 500000
 
 .PHONY: help build gen-data clean run-serial run-simd verify
 
