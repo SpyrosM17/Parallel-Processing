@@ -7,5 +7,7 @@ env/
 
 scaler_serial
 scaler_simd
+scaler_openmp
+scaler_mpi
 
 *.exe
