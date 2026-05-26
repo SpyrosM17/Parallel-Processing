@@ -24,15 +24,15 @@ D     ?= 64
 DTYPE ?= float64
 SEED  ?= 42
 NOISE ?= 0.1
-INPUT_DATA ?= ~/parallel_data/data_$(N)_$(D).bin
+INPUT_DATA ?= data_$(N)_$(D).bin
 
 # Run parameters
 MODE   ?= standard
-OUT_DATA ?= ~/parallel_data/out_$(N)_$(D)_$(MODE).bin
+OUT_DATA ?= out_$(N)_$(D)_$(MODE).bin
 BLOCKS ?= 500000
 
 # MPI processes
-NP ?= 1
+NP ?= 6
 
 #OpenMP Threads
 OMP_THREADS ?= 6

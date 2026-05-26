@@ -341,8 +341,9 @@ int main(int argc, char *argv[])
     double wall1 = 0.0, compute1 = 0.0;
     if (!phase1_compute_stats(input_path, N, D, block_rows, stats, wall1, compute1))
         return EXIT_FAILURE;
-    std::printf("[Phase 1] Done in %.3f s  (compute %.3f s)\n", wall1, compute1);
-    print_stats(stats, D);
+    std::printf("[Phase 1] Done in %.3f s  (compute %.3f s, I/O overlap %.3f s)\n",
+                 wall1, compute1, wall1 - compute1);
+     print_stats(stats, D);
 
      /* ================================================================
       * PHASE 2 — scale and write
@@ -352,16 +353,20 @@ int main(int argc, char *argv[])
     double wall2 = 0.0, compute2 = 0.0;
     if (!phase2_scale_and_write(input_path, output_path, N, D, block_rows, mode, stats, wall2, compute2))
         return EXIT_FAILURE;
-    std::printf("[Phase 2] Done in %.3f s  (compute %.3f s)\n", wall2, compute2);
-
-     /* ---- Overall timing ---- */
-    double total = wall1 + wall2;
-    std::printf("\n=== Timing Summary ===\n");
-    std::printf("  Phase 1 Wall Time : %.3f s  (Compute: %.3f s)\n", wall1, compute1);
-    std::printf("  Phase 2 Wall Time : %.3f s  (Compute: %.3f s)\n", wall2, compute2);
-    std::printf("  Total Compute Time: %.3f s\n", compute1 + compute2);
-    std::printf("  Total Execution Time: %.3f s\n", total);
-    std::printf("  Throughput (3× file): %.2f GB/s\n", 3.0 * file_size_gb / total);
-
-    return EXIT_SUCCESS;
+    std::printf("[Phase 2] Done in %.3f s  (compute %.3f s, I/O overlap %.3f s)\n",
+                 wall2, compute2, wall2 - compute2);
+    /* ---- Summary ---- */
+     double total = wall1 + wall2;
+     std::printf("\n=== Timing Summary ===\n");
+     std::printf("  Phase 1 Total Wall Time : %.3f s  (Compute: %.3f s, I/O: %.3f s)\n",
+                 wall1, compute1, wall1 - compute1);
+     std::printf("  Phase 2 Total Wall Time : %.3f s  (Compute: %.3f s, I/O: %.3f s)\n",
+                 wall2, compute2, wall2 - compute2);
+     std::printf("  -----------------------------------------------\n");
+     std::printf("  Total Compute Time Only : %.3f s\n", compute1 + compute2);
+     std::printf("  Total Execution Time    : %.3f s\n", total);
+     std::printf("  Throughput (3× file)    : %.2f GB/s\n",
+                 3.0 * file_size_gb / total);
+ 
+     return EXIT_SUCCESS;
 }
