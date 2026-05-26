@@ -3,22 +3,51 @@ GEN_SCRIPT ?= generate_data_chunks.py
 CXX        ?= g++
 MPICXX     ?= mpicxx
 
-# Flags for the Serial version (Standard O2 optimization)
+# ── Detect OS and CPU architecture ──────────────────────────────────────────
+UNAME_S := $(shell uname -s)
+UNAME_M := $(shell uname -m)
+
+# ── Flags for the Serial version (Standard O2 optimization) ─────────────────
 CXXFLAGS_SERIAL ?= -std=c++17 -O2 -Wall
 
-# Flags for the SIMD version (AVX2, FMA, O3 optimization, pthread for std::async)
-CXXFLAGS_SIMD ?= -std=c++17 -O3 -Wall -mavx2 -mfma -march=native -pthread
+# ── Flags for the SIMD version ───────────────────────────────────────────────
+# On Apple Silicon (arm64) AVX2 does not exist; fall back to scalar+async I/O.
+# On Intel Mac / Linux, keep AVX2+FMA.
+ifeq ($(UNAME_M), arm64)
+    CXXFLAGS_SIMD ?= -std=c++17 -O3 -Wall -march=native -pthread
+else
+    CXXFLAGS_SIMD ?= -std=c++17 -O3 -Wall -mavx2 -mfma -march=native -pthread
+endif
 
-# Flags for the OpenMP version
-CXXFLAGS_OMP  ?= -std=c++17 -O3 -Wall -fopenmp
+# ── Flags for the OpenMP version ─────────────────────────────────────────────
+# macOS ships Clang which needs Homebrew libomp for OpenMP support.
+# Run:  brew install libomp
+# Linux g++ uses the standard -fopenmp flag.
+ifeq ($(UNAME_S), Darwin)
+    LIBOMP_PREFIX := $(shell brew --prefix libomp 2>/dev/null)
+    ifeq ($(LIBOMP_PREFIX),)
+        $(warning [WARNING] libomp not found via Homebrew. Run: brew install libomp)
+        CXXFLAGS_OMP     ?= -std=c++17 -O3 -Wall -Xpreprocessor -fopenmp
+        CXXFLAGS_OMP_OPT ?= -std=c++17 -O3 -Wall -Xpreprocessor -fopenmp -pthread
+        LDFLAGS_OMP      ?= -lomp
+    else
+        CXXFLAGS_OMP     ?= -std=c++17 -O3 -Wall -Xpreprocessor -fopenmp \
+                            -I$(LIBOMP_PREFIX)/include
+        CXXFLAGS_OMP_OPT ?= -std=c++17 -O3 -Wall -Xpreprocessor -fopenmp \
+                            -I$(LIBOMP_PREFIX)/include -pthread
+        LDFLAGS_OMP      ?= -L$(LIBOMP_PREFIX)/lib -lomp
+    endif
+else
+    # Linux / other POSIX — standard GCC OpenMP flag
+    CXXFLAGS_OMP     ?= -std=c++17 -O3 -Wall -fopenmp
+    CXXFLAGS_OMP_OPT ?= -std=c++17 -O3 -Wall -fopenmp -pthread
+    LDFLAGS_OMP      ?=
+endif
 
-# Flags for the OpenMP optimized version (double-buffering)
-CXXFLAGS_OMP_OPT ?= -std=c++17 -O3 -Wall -fopenmp -pthread
-
-# Flags for the MPI version
+# ── Flags for the MPI version ────────────────────────────────────────────────
 CXXFLAGS_MPI  ?= -std=c++17 -O3 -Wall
 
-# Data generation parameters (override from CLI)
+# ── Data generation parameters (override from CLI) ───────────────────────────
 N     ?= 5000000
 D     ?= 64
 DTYPE ?= float64
@@ -26,16 +55,16 @@ SEED  ?= 42
 NOISE ?= 0.1
 INPUT_DATA ?= data_$(N)_$(D).bin
 
-# Run parameters
+# ── Run parameters ───────────────────────────────────────────────────────────
 MODE   ?= standard
 OUT_DATA ?= out_$(N)_$(D)_$(MODE).bin
 BLOCKS ?= 500000
 
-# MPI processes
-NP ?= 6
+# ── MPI processes ────────────────────────────────────────────────────────────
+NP ?= 7
 
-#OpenMP Threads
-OMP_THREADS ?= 6
+# ── OpenMP Threads ───────────────────────────────────────────────────────────
+OMP_THREADS ?= 10
 
 .PHONY: help build gen-data clean \
         run-serial run-simd run-openmp run-mpi verify
@@ -55,6 +84,9 @@ help:
 	@echo "  make verify          - Verifies the scaler output against scikit-learn"
 	@echo "  make clean           - Removes executables and output .bin files"
 	@echo ""
+	@echo "macOS prerequisites:"
+	@echo "  brew install libomp open-mpi"
+	@echo ""
 	@echo "Example executions:"
 	@echo "  make run-mpi NP=4 N=1000000 D=32 INPUT_DATA=data_1000000_32.bin MODE=standard"
 	@echo "  make run-simd N=1000000 D=32 INPUT_DATA=data_1000000_32.bin MODE=standard BLOCKS=256000"
@@ -68,7 +100,7 @@ scaler_simd: Scaler_SIMD.cpp
 	$(CXX) $(CXXFLAGS_SIMD) -o scaler_simd Scaler_SIMD.cpp
 
 scaler_openmp: Scaler_OpenMP.cpp
-	$(CXX) $(CXXFLAGS_OMP) -o scaler_openmp Scaler_OpenMP.cpp
+	$(CXX) $(CXXFLAGS_OMP) -o scaler_openmp Scaler_OpenMP.cpp $(LDFLAGS_OMP)
 
 scaler_mpi: Scaler_MPI.cpp
 	$(MPICXX) $(CXXFLAGS_MPI) -o scaler_mpi Scaler_MPI.cpp
