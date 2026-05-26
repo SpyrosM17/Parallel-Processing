@@ -104,10 +104,14 @@ static bool phase1_compute_stats(
 
         /* ---- Compute inner loop: timed separately ---- */
         double t_c0 = now_sec();
+        int threads_used = 0;
 
         #pragma omp parallel
         {
             int tid = omp_get_thread_num();
+            #pragma omp single
+            threads_used = omp_get_num_threads();
+
             ColStats *my_stats = &local_stats[static_cast<size_t>(tid) * D];
 
             for (long long j = 0; j < D; ++j) {
@@ -130,7 +134,7 @@ static bool phase1_compute_stats(
             }
         }
 
-        for (int t = 0; t < max_threads; ++t) {
+        for (int t = 0; t < threads_used; ++t) {
             ColStats *my_stats = &local_stats[static_cast<size_t>(t) * D];
             for (long long j = 0; j < D; ++j) {
                 stats[j].sum    += my_stats[j].sum;
@@ -341,7 +345,7 @@ int main(int argc, char *argv[])
     double wall1 = 0.0, compute1 = 0.0;
     if (!phase1_compute_stats(input_path, N, D, block_rows, stats, wall1, compute1))
         return EXIT_FAILURE;
-    std::printf("[Phase 1] Done in %.3f s  (compute %.3f s, I/O overlap %.3f s)\n",
+    std::printf("[Phase 1] Done in %.3f s  (compute %.3f s, I/O %.3f s)\n",
                  wall1, compute1, wall1 - compute1);
      print_stats(stats, D);
 
@@ -353,7 +357,7 @@ int main(int argc, char *argv[])
     double wall2 = 0.0, compute2 = 0.0;
     if (!phase2_scale_and_write(input_path, output_path, N, D, block_rows, mode, stats, wall2, compute2))
         return EXIT_FAILURE;
-    std::printf("[Phase 2] Done in %.3f s  (compute %.3f s, I/O overlap %.3f s)\n",
+    std::printf("[Phase 2] Done in %.3f s  (compute %.3f s, I/O  %.3f s)\n",
                  wall2, compute2, wall2 - compute2);
     /* ---- Summary ---- */
      double total = wall1 + wall2;

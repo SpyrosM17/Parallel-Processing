@@ -159,6 +159,16 @@ static bool phase1_compute_stats(
             MPI_File_close(&fh);
             return false;
         }
+        int count = 0;
+        MPI_Get_count(&status, MPI_DOUBLE, &count);
+        if (count != elems) {
+            std::fprintf(stderr,
+                "[ERROR] Phase 1 rank %d: expected %d elements, read %d "
+                "(offset %lld)\n",
+                rank, elems, count, (long long)cur_offset);
+            MPI_File_close(&fh);
+            return false;
+        }
 
         /* ---- Compute inner loop: timed separately ---- */
         double t_c0 = MPI_Wtime();
@@ -304,12 +314,12 @@ static bool phase2_scale_and_write(
         return false;
     }
 
-    if (rank == 0) {
-        /*MPI_Offset final_size = (MPI_Offset)N
+   
+        MPI_Offset final_size = (MPI_Offset)N
                                 * (MPI_Offset)D
                                 * (MPI_Offset)sizeof(double);
-        MPI_File_set_size(fh_out, final_size);*/
-    }
+        MPI_File_set_size(fh_out, final_size);
+    
     MPI_Barrier(comm);   /* all ranks wait before the first write */
 
     std::vector<double> block(static_cast<size_t>(block_rows * D));
@@ -340,6 +350,16 @@ static bool phase2_scale_and_write(
             MPI_File_close(&fh_out);
             return false;
         }
+        int count = 0;
+        MPI_Get_count(&status, MPI_DOUBLE, &count);
+        if (count != elems) {
+            std::fprintf(stderr,
+                "[ERROR] Phase 2 rank %d: expected %d elements, read %d\n",
+                rank, elems, count);
+            MPI_File_close(&fh_in);
+            MPI_File_close(&fh_out);
+            return false;
+        }
 
         /* ---- Scale in-place: timed separately ---- */
         double t_c0 = MPI_Wtime();
@@ -361,6 +381,15 @@ static bool phase2_scale_and_write(
         if (err != MPI_SUCCESS) {
             std::fprintf(stderr,
                 "[ERROR] Phase 2 rank %d: MPI_File_write_at failed\n", rank);
+            MPI_File_close(&fh_in);
+            MPI_File_close(&fh_out);
+            return false;
+        }
+        MPI_Get_count(&status, MPI_DOUBLE, &count);
+        if (count != elems) {
+            std::fprintf(stderr,
+                "[ERROR] Phase 2 rank %d: expected %d elements, wrote %d\n",
+                rank, elems, count);
             MPI_File_close(&fh_in);
             MPI_File_close(&fh_out);
             return false;

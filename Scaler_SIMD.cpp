@@ -416,6 +416,15 @@
      std::string mode_str    = argv[5];
      long long   block_rows  = (argc == 7) ? std::atoll(argv[6]) : 256000LL;  // larger default
  
+     if (N <= 0 || D <= 0) {
+         std::fprintf(stderr, "[ERROR] N and D must be positive integers.\n");
+         return EXIT_FAILURE;
+     }
+     if (block_rows <= 0) {
+         std::fprintf(stderr, "[ERROR] block_rows must be a positive integer.\n");
+         return EXIT_FAILURE;
+     }
+     
      ScalerMode mode;
      if      (mode_str == "standard") mode = ScalerMode::STANDARD;
      else if (mode_str == "minmax")   mode = ScalerMode::MINMAX;
