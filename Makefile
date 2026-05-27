@@ -60,7 +60,7 @@ INPUT_DATA ?= data_$(N)_$(D).bin
 # ── Run parameters ───────────────────────────────────────────────────────────
 MODE   ?= standard
 OUT_DATA ?= out_$(N)_$(D)_$(MODE).bin
-BLOCKS ?= 500000
+BLOCKS ?= 256000
 
 # ── MPI processes ────────────────────────────────────────────────────────────
 NP ?= 7
