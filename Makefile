@@ -2,6 +2,9 @@ PYTHON     ?= python3
 GEN_SCRIPT ?= generate_data_chunks.py
 CXX        ?= g++
 MPICXX     ?= mpicxx
+# nvhpc/26.1 module ships CUDA 13.1 which dropped sm_70 (V100) support.
+# Use the system-installed CUDA 12.2 instead.
+NVCC       ?= /usr/local/cuda-12.2/bin/nvcc
 
 # ── Detect OS and CPU architecture ──────────────────────────────────────────
 UNAME_S := $(shell uname -s)
@@ -28,24 +31,23 @@ ifeq ($(UNAME_S), Darwin)
     ifeq ($(LIBOMP_PREFIX),)
         $(warning [WARNING] libomp not found via Homebrew. Run: brew install libomp)
         CXXFLAGS_OMP     ?= -std=c++17 -O3 -Wall -Xpreprocessor -fopenmp
-        CXXFLAGS_OMP_OPT ?= -std=c++17 -O3 -Wall -Xpreprocessor -fopenmp -pthread
         LDFLAGS_OMP      ?= -lomp
     else
         CXXFLAGS_OMP     ?= -std=c++17 -O3 -Wall -Xpreprocessor -fopenmp \
                             -I$(LIBOMP_PREFIX)/include
-        CXXFLAGS_OMP_OPT ?= -std=c++17 -O3 -Wall -Xpreprocessor -fopenmp \
-                            -I$(LIBOMP_PREFIX)/include -pthread
         LDFLAGS_OMP      ?= -L$(LIBOMP_PREFIX)/lib -lomp
     endif
 else
     # Linux / other POSIX — standard GCC OpenMP flag
     CXXFLAGS_OMP     ?= -std=c++17 -O3 -Wall -fopenmp
-    CXXFLAGS_OMP_OPT ?= -std=c++17 -O3 -Wall -fopenmp -pthread
     LDFLAGS_OMP      ?=
 endif
 
 # ── Flags for the MPI version ────────────────────────────────────────────────
 CXXFLAGS_MPI  ?= -std=c++17 -O3 -Wall
+
+# ── Flags for the CUDA version (NVIDIA Tesla V100 is sm_70) ──────────────────
+CUDAFLAGS     ?= -std=c++17 -O3 -arch=sm_70
 
 # ── Data generation parameters (override from CLI) ───────────────────────────
 N     ?= 5000000
@@ -76,11 +78,13 @@ help:
 	@echo "  make scaler_simd     - Builds only the SIMD version"
 	@echo "  make scaler_openmp   - Builds only the OpenMP version"
 	@echo "  make scaler_mpi      - Builds only the MPI version"
+	@echo "  make scaler_cuda     - Builds only the CUDA version"
 	@echo "  make gen-data        - Generates the input binary dataset"
 	@echo "  make run-serial      - Runs the serial executable"
 	@echo "  make run-simd        - Runs the SIMD executable"
 	@echo "  make run-openmp      - Runs the OpenMP executable"
 	@echo "  make run-mpi         - Runs the MPI executable (NP processes)"
+	@echo "  make run-cuda        - Runs the CUDA executable"
 	@echo "  make verify          - Verifies the scaler output against scikit-learn"
 	@echo "  make clean           - Removes executables and output .bin files"
 	@echo ""
@@ -91,7 +95,7 @@ help:
 	@echo "  make run-mpi NP=4 N=1000000 D=32 INPUT_DATA=data_1000000_32.bin MODE=standard"
 	@echo "  make run-simd N=1000000 D=32 INPUT_DATA=data_1000000_32.bin MODE=standard BLOCKS=256000"
 
-build: scaler_serial scaler_simd scaler_openmp scaler_mpi
+build: scaler_serial scaler_simd scaler_openmp scaler_mpi scaler_cuda
 
 scaler_serial: Scaler_Serial.cpp
 	$(CXX) $(CXXFLAGS_SERIAL) -o scaler_serial Scaler_Serial.cpp
@@ -104,6 +108,9 @@ scaler_openmp: Scaler_OpenMP.cpp
 
 scaler_mpi: Scaler_MPI.cpp
 	$(MPICXX) $(CXXFLAGS_MPI) -o scaler_mpi Scaler_MPI.cpp
+
+scaler_cuda: Scaler_CUDA.cu
+	$(NVCC) $(CUDAFLAGS) -o scaler_cuda Scaler_CUDA.cu
 
 gen-data:
 	$(PYTHON) $(GEN_SCRIPT) \
@@ -126,6 +133,9 @@ run-openmp: scaler_openmp
 run-mpi: scaler_mpi
 	mpirun -np $(NP) ./scaler_mpi $(INPUT_DATA) $(OUT_DATA) $(N) $(D) $(MODE) $(BLOCKS)
 
+run-cuda: scaler_cuda
+	./scaler_cuda $(INPUT_DATA) $(OUT_DATA) $(N) $(D) $(MODE) $(BLOCKS)
+
 verify:
 	$(PYTHON) Verifier.py \
 		--input $(INPUT_DATA) \
@@ -137,4 +147,4 @@ verify:
 		--block-rows $(BLOCKS)
 
 clean:
-	rm -f scaler_serial scaler_simd scaler_openmp scaler_mpi out_*.bin
+	rm -f scaler_serial scaler_simd scaler_openmp scaler_mpi scaler_cuda out_*.bin
