@@ -1,19 +1,15 @@
 /*
- * Scaler_OpenMP.cpp  —  OpenMP Implementation
- * ------------------------------------------------
+ * Scaler_OpenMP.cpp
  *
- * Parallelises per-column statistics computation and block scaling using
- * OpenMP threads. The implementation keeps the same block-based I/O
- * strategy as the serial reference, avoiding races by using per-thread
- * accumulators for phase 1 and thread-local row processing for phase 2.
+ * OpenMP version of the scaler. Uses threads to parallelise the row processing.
+ * I/O is still sequential but we process the blocks in parallel to speed it up.
  *
  * Usage:
- *   ./scaler_openmp input.bin output.bin N D mode [block_rows]
- *   mode: standard | minmax
- *   block_rows: optional, default = 256000
+ * ./scaler_openmp input.bin output.bin N D mode [block_rows]
+ * mode: standard | minmax
  *
  * Build:
- *   g++ -O3 -std=c++17 -fopenmp -o scaler_openmp Scaler_OpenMP.cpp
+ * g++ -O3 -std=c++17 -fopenmp -o scaler_openmp Scaler_OpenMP.cpp
  */
 
 #include <cstdio>
@@ -29,7 +25,7 @@
 
 
 /* ------------------------------------------------------------------ */
- /*  Wall-clock timer                                                    */
+ /* Get current time                                                    */
  /* ------------------------------------------------------------------ */
 static double now_sec()
 {
@@ -38,14 +34,14 @@ static double now_sec()
 }
 
  /* ------------------------------------------------------------------ */
- /*  Per-column accumulators                                             */
+ /* Stat accumulators                                                   */
  /* ------------------------------------------------------------------ */
 struct ColStats {
     double sum;
     double sum_sq;
     double min_val;
     double max_val;
-    /* Derived (filled after full scan) */
+    /* Calculated at the end */
     double mean;
     double var;
     double std_dev;
@@ -54,8 +50,7 @@ struct ColStats {
 enum class ScalerMode { STANDARD, MINMAX };
 
 /* ------------------------------------------------------------------ */
- /*  Phase 1 — scan the whole file in blocks, accumulate statistics     */
- /*  compute_time — time spent only in the inner accumulation loops     */
+ /* Phase 1: Read file in blocks and compute stats                     */
  /* ------------------------------------------------------------------ */
 
 static bool phase1_compute_stats(
@@ -67,7 +62,7 @@ static bool phase1_compute_stats(
     double       &wall_time,
     double       &compute_time)
 {
-    /* Initialise accumulators */
+    /* Init accumulators */
     for (long long j = 0; j < D; ++j) {
         stats[j].sum     = 0.0;
         stats[j].sum_sq  = 0.0;
@@ -102,7 +97,7 @@ static bool phase1_compute_stats(
             return false;
         }
 
-        /* ---- Compute inner loop: timed separately ---- */
+        /* ---- Only time the actual math, not the disk I/O ---- */
         double t_c0 = now_sec();
         int threads_used = 0;
 
@@ -151,7 +146,7 @@ static bool phase1_compute_stats(
     wall_time = now_sec() - t_wall_start;
     std::fclose(fin);
 
-    /* Derive mean, variance, std-dev from accumulators */
+    /* Get the variance and std dev */
     double inv_N = 1.0 / static_cast<double>(N);
     for (long long j = 0; j < D; ++j) {
         stats[j].mean    = stats[j].sum * inv_N;
@@ -165,8 +160,7 @@ static bool phase1_compute_stats(
 
 
  /* ------------------------------------------------------------------ */
- /*  Phase 2 — re-read file, apply scaling, write output                */
- /*  compute_time — time spent only in the inner scaling loops          */
+ /* Phase 2: scale the values and write them out                       */
  /* ------------------------------------------------------------------ */
 static bool phase2_scale_and_write(
     const char   *input_path,
@@ -223,7 +217,7 @@ static bool phase2_scale_and_write(
             return false;
         }
 
-        /* ---- Compute inner loop: timed separately ---- */
+        /* ---- Time the scaling separately ---- */
         double t_c0 = now_sec();
 
         #pragma omp parallel for schedule(static)
@@ -257,7 +251,7 @@ static bool phase2_scale_and_write(
 }
 
  /* ------------------------------------------------------------------ */
- /*  Print statistics summary                                            */
+ /* Print a summary so we know it worked                                */
  /* ------------------------------------------------------------------ */
 static void print_stats(const std::vector<ColStats> &stats, long long D,
                         long long max_cols = 5)
@@ -283,7 +277,7 @@ static void print_stats(const std::vector<ColStats> &stats, long long D,
 
 
  /* ------------------------------------------------------------------ */
- /*  main                                                                */
+ /* Main                                                                */
  /* ------------------------------------------------------------------ */
 
 int main(int argc, char *argv[])
@@ -338,7 +332,7 @@ int main(int argc, char *argv[])
     std::vector<ColStats> stats(static_cast<size_t>(D));
 
      /* ================================================================
-      * PHASE 1 — compute statistics
+      * Phase 1
       * ================================================================ */
 
     std::printf("[Phase 1] Computing per-column statistics (OpenMP)...\n");
@@ -350,7 +344,7 @@ int main(int argc, char *argv[])
      print_stats(stats, D);
 
      /* ================================================================
-      * PHASE 2 — scale and write
+      * Phase 2
       * ================================================================ */
 
     std::printf("[Phase 2] Applying %s and writing output (OpenMP)...\n", mode_str.c_str());
@@ -359,7 +353,7 @@ int main(int argc, char *argv[])
         return EXIT_FAILURE;
     std::printf("[Phase 2] Done in %.3f s  (compute %.3f s, I/O  %.3f s)\n",
                  wall2, compute2, wall2 - compute2);
-    /* ---- Summary ---- */
+    /* ---- End summary ---- */
      double total = wall1 + wall2;
      std::printf("\n=== Timing Summary ===\n");
      std::printf("  Phase 1 Total Wall Time : %.3f s  (Compute: %.3f s, I/O: %.3f s)\n",

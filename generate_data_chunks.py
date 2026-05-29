@@ -7,7 +7,7 @@ from sklearn.datasets import make_regression
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Generate synthetic regression data and store X as raw binary (Chunked to save memory)."
+        description="Generates the dummy binary data for testing. Does it in chunks so Python doesn't eat all the RAM."
     )
 
     parser.add_argument("--samples", type=int, required=True,

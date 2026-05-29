@@ -1,29 +1,15 @@
 /**
- * Scaler_SIMD.cpp  —  SIMD AVX2 Implementation with Double-Buffered I/O
- * -----------------------------------------------------------------------
+ * Scaler_SIMD.cpp
  *
- * Key optimisation over the naive SIMD version:
- *   DOUBLE BUFFERING — while AVX2 processes block[cur], the OS is already
- *   reading block[1-cur] from disk on a background thread.  This hides
- *   almost all I/O latency behind compute, giving a meaningful wall-clock
- *   win on I/O-bound workloads (the common case for large datasets).
+ * SIMD version using AVX2. Also added double buffering for I/O with std::async 
+ * because disk reads were completely bottlenecking the compute.
  *
- * Other I/O improvements:
- *   • posix_fadvise(POSIX_FADV_SEQUENTIAL) — tells the kernel to read-ahead
- *   • setvbuf with a large stdio buffer — reduces syscall overhead
- *   • Larger default block_rows (256 000) — amortises read() overhead
- *
- * Compute kernel (unchanged from optimised SIMD):
- *   • Aligned _mm_malloc buffers for shift/scale/accumulators
- *   • _mm256_load_pd / _mm256_store_pd when D is a multiple of 4
- *   • FMA (_mm256_fmadd_pd) for sum-of-squares in phase 1
- *
- * Usage:
- *   ./scaler_simd input.bin output.bin N D mode [block_rows]
- *   mode: standard | minmax
+ * Run it like this:
+ * ./scaler_simd input.bin output.bin N D mode [block_rows]
+ * mode: standard | minmax
  *
  * Build:
- *   g++ -O3 -march=native -std=c++17 -o scaler_simd Scaler_SIMD.cpp
+ * g++ -O3 -march=native -std=c++17 -o scaler_simd Scaler_SIMD.cpp
  */
 
  #include <cstdio>
@@ -37,7 +23,7 @@
  #include <algorithm>
  #include <future>          // std::async, std::future
 
- /* AVX2 is only available on x86/x86-64 with -mavx2; guard everything */
+ /* AVX2 requires -mavx2. Just wrapping everything so it compiles everywhere */
  #ifdef __AVX2__
  #  include <immintrin.h>
  #endif
@@ -47,7 +33,7 @@
  #endif
 
  /* ------------------------------------------------------------------ */
- /*  Wall-clock timer                                                    */
+ /* Basic timer                                                         */
  /* ------------------------------------------------------------------ */
  static double now_sec() {
      using clk = std::chrono::steady_clock;
@@ -55,7 +41,7 @@
  }
 
  /* ------------------------------------------------------------------ */
- /*  Hint sequential access to the OS (Linux only; no-op elsewhere)     */
+ /* Tell OS to read ahead since we go linearly. Helps Linux a bit.      */
  /* ------------------------------------------------------------------ */
  static void hint_sequential(FILE *f, long long total_bytes)
  {
@@ -68,8 +54,7 @@
  }
 
  /* ------------------------------------------------------------------ */
- /*  Portable 32-byte aligned allocator                                  */
- /*  Uses _mm_malloc on x86 with AVX2, posix_memalign everywhere else  */
+ /* Custom aligned malloc for AVX2 (needs 32-byte alignment)            */
  /* ------------------------------------------------------------------ */
  static inline double* simd_malloc(size_t n_doubles)
  {
@@ -92,7 +77,7 @@
  }
 
  /* ------------------------------------------------------------------ */
- /*  Per-column accumulators                                             */
+ /* Stats struct                                                        */
  /* ------------------------------------------------------------------ */
  struct ColStats {
      double sum, sum_sq, min_val, max_val;
@@ -102,8 +87,7 @@
  enum class ScalerMode { STANDARD, MINMAX };
 
  /* ------------------------------------------------------------------ */
- /*  Async read helper — reads exactly `elems` doubles from `fin`       */
- /*  into `buf`.  Returns number of elements actually read.             */
+ /* Helper to read data in the background                               */
  /* ------------------------------------------------------------------ */
  static size_t async_read(FILE *fin, double *buf, size_t elems)
  {
@@ -111,7 +95,7 @@
  }
 
  /* ================================================================== */
- /*  PHASE 1 — double-buffered read + AVX2 accumulation                */
+ /* Phase 1: Read with async buffering and do math with AVX2          */
  /* ================================================================== */
  static bool phase1_compute_stats(
      const char   *input_path,
@@ -122,7 +106,7 @@
      double       &wall_time,
      double       &compute_time)
  {
-     /* ---------- initialise accumulators ---------- */
+     /* ---------- Init to zero/infinity ---------- */
      for (long long j = 0; j < D; ++j) {
          stats[j].sum     = 0.0;
          stats[j].sum_sq  = 0.0;
@@ -133,13 +117,13 @@
      FILE *fin = std::fopen(input_path, "rb");
      if (!fin) { std::fprintf(stderr, "[ERROR] Cannot open: %s\n", input_path); return false; }
 
-     /* Large stdio buffer + sequential hint */
+     /* Use a big 8MB buffer for stdio to avoid too many system calls */
      const size_t STDIO_BUF = 8ULL * 1024 * 1024; // 8 MB
      std::vector<char> stdio_buf(STDIO_BUF);
      std::setvbuf(fin, stdio_buf.data(), _IOFBF, STDIO_BUF);
      hint_sequential(fin, N * D * (long long)sizeof(double));
 
-     /* ---------- aligned working buffers ---------- */
+     /* ---------- Prep the aligned memory ---------- */
      size_t blk_elems = static_cast<size_t>(block_rows * D);
 
      double *buf[2];
@@ -169,7 +153,7 @@
      bool      aligned_d = (D % 4 == 0);
  #endif
 
-     /* ---------- prime the pump: read block 0 synchronously ---------- */
+     /* ---------- Read the first block before entering the loop ---------- */
     long long rows_remaining = N;
     long long rows_this = std::min(block_rows, rows_remaining);
     size_t    elems_this = static_cast<size_t>(rows_this * D);
@@ -185,9 +169,9 @@
      rows_remaining -= rows_this;
      int cur = 0;
 
-     /* ---------- double-buffered loop ---------- */
+     /* ---------- Main loop with double buffering ---------- */
      while (true) {
-         /* --- kick off async read of NEXT block while we compute --- */
+         /* --- Start reading the NEXT block while we work on this one --- */
          long long rows_next  = std::min(block_rows, rows_remaining);
          size_t    elems_next = static_cast<size_t>(rows_next * D);
 
@@ -198,7 +182,7 @@
                                     async_read, fin, next_buf, elems_next);
          }
 
-         /* --- accumulation on current block --- */
+         /* --- Do the AVX2 math on the current block --- */
          double t_c0 = now_sec();
          const long long rows_cur = rows_this;
 
@@ -226,7 +210,7 @@
                  mx         = _mm256_max_pd(mx, x);
                  _mm256_store_pd(&v_max[v*4], mx);
              }
-             /* scalar tail */
+             /* Handle the leftover columns if D isn't a multiple of 4 */
              for (long long j = num_vecs * 4; j < D; ++j) {
                  double val = row[j];
                  v_sum[j]    += val;
@@ -235,7 +219,7 @@
                  if (val > v_max[j]) v_max[j] = val;
              }
  #else
-             /* scalar fallback (non-AVX2 platforms, e.g. Apple Silicon) */
+             /* Fallback if AVX2 isn't supported (like on my Mac) */
              for (long long j = 0; j < D; ++j) {
                  double val = row[j];
                  v_sum[j]    += val;
@@ -247,7 +231,7 @@
          }
          compute_time += (now_sec() - t_c0);
 
-         /* --- wait for async read to finish --- */
+         /* --- Sync up: wait for the background read to finish --- */
          if (rows_next > 0) {
              size_t got = io_future.get();
              if (got != elems_next) {
@@ -267,7 +251,7 @@
 
      std::fclose(fin);
 
-     /* --- merge accumulators into stats --- */
+     /* --- Copy results from our aligned arrays to the stats struct --- */
      for (long long j = 0; j < D; ++j) {
          stats[j].sum    += v_sum[j];
          stats[j].sum_sq += v_sum_sq[j];
@@ -279,7 +263,7 @@
      simd_free(v_sum);  simd_free(v_sum_sq);
      simd_free(v_min);  simd_free(v_max);
 
-     /* --- derive mean / variance / std_dev --- */
+     /* --- Calculate variance and standard dev --- */
      double inv_N = 1.0 / static_cast<double>(N);
      for (long long j = 0; j < D; ++j) {
          stats[j].mean    = stats[j].sum * inv_N;
@@ -291,7 +275,7 @@
  }
 
  /* ================================================================== */
- /*  PHASE 2 — double-buffered read + AVX2 scaling + write             */
+ /* Phase 2: read, scale with AVX2, and write out to the new file     */
  /* ================================================================== */
  static bool phase2_scale_and_write(
      const char   *input_path,
@@ -309,14 +293,14 @@
      FILE *fout = std::fopen(output_path, "wb");
      if (!fout) { std::fprintf(stderr, "[ERROR] Cannot open output: %s\n", output_path); std::fclose(fin); return false; }
 
-     /* I/O hints */
+     /* Same I/O tweaks as Phase 1 */
      const size_t STDIO_BUF = 8ULL * 1024 * 1024;
      std::vector<char> stdio_in(STDIO_BUF), stdio_out(STDIO_BUF);
      std::setvbuf(fin,  stdio_in.data(),  _IOFBF, STDIO_BUF);
      std::setvbuf(fout, stdio_out.data(), _IOFBF, STDIO_BUF);
      hint_sequential(fin, N * D * (long long)sizeof(double));
 
-     /* --- aligned shift / scale arrays --- */
+     /* --- Aligned arrays for shift and scale so we can load them fast --- */
      double *shift_arr = simd_malloc(D);
      double *scale_arr = simd_malloc(D);
 
@@ -341,7 +325,7 @@
      bool      aligned_d = (D % 4 == 0);
  #endif
 
-     /* --- prime the pump --- */
+     /* --- Read first block --- */
      long long rows_remaining = N;
      long long rows_this = std::min(block_rows, rows_remaining);
      size_t    elems_this = static_cast<size_t>(rows_this * D);
@@ -356,7 +340,7 @@
      rows_remaining -= rows_this;
      int cur = 0;
 
-     /* --- double-buffered loop --- */
+     /* --- Main loop --- */
      while (true) {
          long long rows_next  = std::min(block_rows, rows_remaining);
          size_t    elems_next = static_cast<size_t>(rows_next * D);
@@ -368,7 +352,7 @@
                                     async_read, fin, next_buf, elems_next);
          }
 
-         /* --- scaling in-place on current block --- */
+         /* --- Do the scaling on the current chunk --- */
          double t_c0 = now_sec();
 
          for (long long i = 0; i < rows_this; ++i) {
@@ -388,21 +372,21 @@
              for (long long j = num_vecs * 4; j < D; ++j)
                  row[j] = (row[j] - shift_arr[j]) * scale_arr[j];
  #else
-             /* scalar fallback (non-AVX2 platforms, e.g. Apple Silicon) */
+             /* Fallback if AVX2 isn't supported */
              for (long long j = 0; j < D; ++j)
                  row[j] = (row[j] - shift_arr[j]) * scale_arr[j];
  #endif
          }
          compute_time += (now_sec() - t_c0);
 
-        /* write current block: compute actual elements for this block */
+        /* Write current block to the new file */
         size_t elems_cur = static_cast<size_t>(rows_this * D);
         if (std::fwrite(buf[cur], sizeof(double), elems_cur, fout) != elems_cur) {
             std::fprintf(stderr, "[ERROR] Phase 2: write failed\n");
             std::fclose(fin); std::fclose(fout); return false;
         }
 
-         /* --- wait for next read --- */
+         /* --- Wait for the background read to finish --- */
          if (rows_next > 0) {
              size_t got = io_future.get();
              if (got != elems_next) {
@@ -427,7 +411,7 @@
  }
 
  /* ------------------------------------------------------------------ */
- /*  Print stats summary                                                 */
+ /* Print a small summary table                                         */
  /* ------------------------------------------------------------------ */
  static void print_stats(const std::vector<ColStats> &stats, long long D, long long max_cols = 5)
  {
@@ -446,7 +430,7 @@
  }
 
  /* ------------------------------------------------------------------ */
- /*  main                                                                */
+ /* Main                                                                */
  /* ------------------------------------------------------------------ */
  int main(int argc, char *argv[])
  {
@@ -463,7 +447,7 @@
      long long   N           = std::atoll(argv[3]);
      long long   D           = std::atoll(argv[4]);
      std::string mode_str    = argv[5];
-     long long   block_rows  = (argc == 7) ? std::atoll(argv[6]) : 256000LL;  // larger default
+     long long   block_rows  = (argc == 7) ? std::atoll(argv[6]) : 256000LL;  // larger default for less IO overhead
 
      if (N <= 0 || D <= 0) {
          std::fprintf(stderr, "[ERROR] N and D must be positive integers.\n");
@@ -527,7 +511,7 @@
      std::printf("[Phase 2] Done in %.3f s  (compute %.3f s, I/O overlap %.3f s)\n",
                  wall2, compute2, wall2 - compute2);
 
-     /* ---- Summary ---- */
+     /* ---- Overall results ---- */
      double total = wall1 + wall2;
      std::printf("\n=== Timing Summary ===\n");
      std::printf("  Phase 1 Total Wall Time : %.3f s  (Compute: %.3f s, I/O: %.3f s)\n",

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-verify.py — Correctness checker for the serial scaler
+verify.py
 ------------------------------------------------------
-Compares the C++ scaler output against the expected StandardScaler / MinMaxScaler
-reference implementation using a streaming, block-based verification approach.
+Script to check if the C++ output is actually correct.
+Compares against numpy in chunks so it doesn't run out of RAM.
 """
 
 import argparse

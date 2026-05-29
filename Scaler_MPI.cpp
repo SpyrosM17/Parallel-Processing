@@ -1,52 +1,24 @@
 /*
- * Scaler_MPI.cpp  —  MPI Implementation
- * ----------------------------------------
+ * Scaler_MPI.cpp
  *
- * Distributes the N×D matrix row-wise across MPI processes.
- * Each process owns a contiguous partition of rows and accesses
- * its portion of the file directly by byte offset using MPI-IO
- * (MPI_File_read_at / MPI_File_write_at — independent I/O).
+ * MPI Implementation for the parallel processing project.
+ * Splits the dataset by rows across different MPI processes.
+ * Uses MPI-IO for reading/writing the binary file.
  *
- * ┌─────────────────────────────────────────────────────────────┐
- * │ Phase 1 — Statistics                                        │
- * │  Each process scans its row partition block-by-block,       │
- * │  accumulating local sum, sum_sq, min, max per column.       │
- * │  Four MPI_Allreduce calls (SUM/SUM/MIN/MAX) merge the       │
- * │  partial results into global statistics. All processes then │
- * │  derive mean, variance and std_dev identically.             │
- * ├─────────────────────────────────────────────────────────────┤
- * │ Phase 2 — Scale and Write                                   │
- * │  Each process re-reads its partition block-by-block,        │
- * │  applies the global shift/scale transformation in-place,    │
- * │  and writes the result at the correct byte offset in the    │
- * │  output file using MPI_File_write_at.                       │
- * └─────────────────────────────────────────────────────────────┘
+ * Phase 1: Each process reads its own chunk of rows and computes local stats.
+ * Then we run MPI_Allreduce to combine them globally.
+ * Phase 2: Each process scales its own rows and writes them straight to the
+ * output file at the right byte offset.
  *
- * Timing:
- *   MPI_Wtime() is used throughout. Wall times are the maximum
- *   across all processes (MPI_Allreduce MAX), giving the true
- *   parallel wall-clock time. The Allreduce communication cost
- *   for Phase 1 is broken out separately.
- *
- * Row Partition:
- *   Process r owns rows [ row_start_r,  row_start_r + my_rows_r )
- *     base      = N / nprocs
- *     remainder = N % nprocs
- *     my_rows   = base + (rank < remainder ? 1 : 0)
- *     row_start = rank * base + min(rank, remainder)
- *   This guarantees at most 1-row imbalance between processes.
- *
- * MPI count overflow guard:
- *   MPI counts are 32-bit ints. We require block_rows * D < INT_MAX.
- *   The default block_rows = 256 000 is safe for D up to ~8 000.
+ * Note on MPI limits: MPI counts are 32-bit ints. Have to be careful that 
+ * block_rows * D doesn't overflow.
  *
  * Usage:
- *   mpirun -np <P> ./scaler_mpi input.bin output.bin N D mode [block_rows]
- *   mode: standard | minmax
- *   block_rows: optional, default = 256000
+ * mpirun -np <P> ./scaler_mpi input.bin output.bin N D mode [block_rows]
+ * mode: standard | minmax
  *
  * Build:
- *   mpicxx -O3 -std=c++17 -o scaler_mpi Scaler_MPI.cpp
+ * mpicxx -O3 -std=c++17 -o scaler_mpi Scaler_MPI.cpp
  */
 
 #include <mpi.h>
@@ -60,14 +32,14 @@
 #include <algorithm>
 
 /* ------------------------------------------------------------------ */
-/*  Per-column accumulators                                             */
+/* Struct to hold our stats                                          */
 /* ------------------------------------------------------------------ */
 struct ColStats {
     double sum;
     double sum_sq;
     double min_val;
     double max_val;
-    /* Derived after global Allreduce */
+    /* Calculated after we gather everything with MPI_Allreduce */
     double mean;
     double var;
     double std_dev;
@@ -76,8 +48,7 @@ struct ColStats {
 enum class ScalerMode { STANDARD, MINMAX };
 
 /* ------------------------------------------------------------------ */
-/*  Row-partition helper                                                */
-/*  Returns the [row_start, row_start + my_rows) range for 'rank'.    */
+/* Figure out which rows belong to this MPI rank                     */
 /* ------------------------------------------------------------------ */
 static void compute_partition(long long N, int nprocs, int rank,
                                long long &my_rows, long long &my_row_start)
@@ -90,11 +61,7 @@ static void compute_partition(long long N, int nprocs, int rank,
 }
 
 /* ------------------------------------------------------------------ */
-/*  Phase 1 — local accumulation  +  MPI_Allreduce merge               */
-/*                                                                      */
-/*  wall_time    – max across all processes (MPI_Allreduce MAX)         */
-/*  compute_time – local compute-loop time only (no I/O, no comm)      */
-/*  comm_time    – time spent in the four MPI_Allreduce calls          */
+/* Phase 1: Calculate local stats and combine them                   */
 /* ------------------------------------------------------------------ */
 static bool phase1_compute_stats(
     const char            *input_path,
@@ -112,7 +79,7 @@ static bool phase1_compute_stats(
     int rank;
     MPI_Comm_rank(comm, &rank);
 
-    /* --- Initialise local accumulators --- */
+    /* --- Init stats --- */
     for (long long j = 0; j < D; ++j) {
         stats[j].sum     = 0.0;
         stats[j].sum_sq  = 0.0;
@@ -120,7 +87,7 @@ static bool phase1_compute_stats(
         stats[j].max_val = -std::numeric_limits<double>::infinity();
     }
 
-    /* --- Open the input file collectively (MPI-IO) --- */
+    /* --- Open file with MPI-IO --- */
     MPI_File fh;
     int rc = MPI_File_open(comm, const_cast<char *>(input_path),
                            MPI_MODE_RDONLY, MPI_INFO_NULL, &fh);
@@ -133,7 +100,7 @@ static bool phase1_compute_stats(
 
     std::vector<double> block(static_cast<size_t>(block_rows * D));
 
-    /* Starting byte offset for this process */
+    /* Calculate where this process should start reading */
     MPI_Offset cur_offset    = (MPI_Offset)my_row_start
                                * (MPI_Offset)D
                                * (MPI_Offset)sizeof(double);
@@ -142,10 +109,10 @@ static bool phase1_compute_stats(
 
     double t_wall_start = MPI_Wtime();
 
-    /* --- Block loop: read → accumulate → advance --- */
+    /* --- Loop through chunks --- */
     while (rows_remaining > 0) {
         long long rows_this = std::min(block_rows, rows_remaining);
-        int       elems     = (int)(rows_this * D);   /* safe: checked in main */
+        int       elems     = (int)(rows_this * D);   /* Checked in main to avoid overflow */
 
         MPI_Status status;
         int err = MPI_File_read_at(fh, cur_offset,
@@ -170,7 +137,7 @@ static bool phase1_compute_stats(
             return false;
         }
 
-        /* ---- Compute inner loop: timed separately ---- */
+        /* ---- Time just the math loop ---- */
         double t_c0 = MPI_Wtime();
 
         for (long long i = 0; i < rows_this; ++i) {
@@ -196,9 +163,8 @@ static bool phase1_compute_stats(
     MPI_File_close(&fh);
 
     /* ----------------------------------------------------------------
-     * Allreduce: merge partial statistics from all processes
-     * Four separate calls keep the logic clear.
-     * Total per-process comm traffic: 4 * D * 8 bytes (e.g., 4 KB for D=128)
+     * Merge the results from all ranks. Doing 4 separate calls is easier
+     * than packing them and still pretty fast.
      * ---------------------------------------------------------------- */
     double t_comm_start = MPI_Wtime();
 
@@ -225,7 +191,7 @@ static bool phase1_compute_stats(
 
     comm_time = MPI_Wtime() - t_comm_start;
 
-    /* --- Derive global mean / variance / std_dev (identical on every rank) --- */
+    /* --- Calculate the final std_dev on all ranks so everyone has it --- */
     double inv_N = 1.0 / (double)N;
     for (long long j = 0; j < D; ++j) {
         stats[j].sum     = global_sum[j];
@@ -239,7 +205,7 @@ static bool phase1_compute_stats(
         stats[j].std_dev = std::sqrt(stats[j].var);
     }
 
-    /* Reduce wall time: report the slowest process */
+    /* Grab the time of the slowest process for our wall clock */
     double local_wall = MPI_Wtime() - t_wall_start;
     MPI_Allreduce(&local_wall, &wall_time, 1, MPI_DOUBLE, MPI_MAX, comm);
 
@@ -247,10 +213,7 @@ static bool phase1_compute_stats(
 }
 
 /* ------------------------------------------------------------------ */
-/*  Phase 2 — re-read partition, apply scaling, write via MPI-IO       */
-/*                                                                      */
-/*  wall_time    – max across all processes (MPI_Allreduce MAX)         */
-/*  compute_time – local scaling-loop time only                         */
+/* Phase 2: read partition, scale, write back out with MPI-IO        */
 /* ------------------------------------------------------------------ */
 static bool phase2_scale_and_write(
     const char                  *input_path,
@@ -269,7 +232,7 @@ static bool phase2_scale_and_write(
     int rank;
     MPI_Comm_rank(comm, &rank);
 
-    /* --- Pre-compute shift / scale vectors (same on all ranks) --- */
+    /* --- Pre-compute shift/scale so we don't do it inside the loop --- */
     std::vector<double> shift(D), scale(D);
     for (long long j = 0; j < D; ++j) {
         if (mode == ScalerMode::STANDARD) {
@@ -283,7 +246,7 @@ static bool phase2_scale_and_write(
         }
     }
 
-    /* --- Open input file for reading (MPI-IO) --- */
+    /* --- Open input --- */
     MPI_File fh_in;
     int rc = MPI_File_open(comm, const_cast<char *>(input_path),
                            MPI_MODE_RDONLY, MPI_INFO_NULL, &fh_in);
@@ -294,13 +257,10 @@ static bool phase2_scale_and_write(
         return false;
     }
 
-    /* --- Open output file for writing (MPI-IO) --- */
+    /* --- Open output --- */
     /*
-     * All processes open together with CREATE|WRONLY.
-     * Rank 0 immediately sets the file to its exact final size so that:
-     *   (a) any stale bytes from a longer previous run are discarded, and
-     *   (b) the filesystem can pre-allocate space for better write perf.
-     * A Barrier ensures the set_size is visible before any writes begin.
+     * Make sure Rank 0 sets the file size early to wipe out old runs
+     * and let the filesystem prep the space.
      */
     MPI_File fh_out;
     rc = MPI_File_open(comm, const_cast<char *>(output_path),
@@ -320,7 +280,7 @@ static bool phase2_scale_and_write(
                                 * (MPI_Offset)sizeof(double);
         MPI_File_set_size(fh_out, final_size);
     
-    MPI_Barrier(comm);   /* all ranks wait before the first write */
+    MPI_Barrier(comm);   /* Wait for rank 0 to finish setting the size */
 
     std::vector<double> block(static_cast<size_t>(block_rows * D));
 
@@ -332,14 +292,14 @@ static bool phase2_scale_and_write(
 
     double t_wall_start = MPI_Wtime();
 
-    /* --- Block loop: read → scale → write at same offset --- */
+    /* --- Read, process, write block loop --- */
     while (rows_remaining > 0) {
         long long rows_this = std::min(block_rows, rows_remaining);
         int       elems     = (int)(rows_this * D);
 
         MPI_Status status;
 
-        /* Read */
+        /* Read the chunk */
         int err = MPI_File_read_at(fh_in, cur_offset,
                                     block.data(), elems,
                                     MPI_DOUBLE, &status);
@@ -361,7 +321,7 @@ static bool phase2_scale_and_write(
             return false;
         }
 
-        /* ---- Scale in-place: timed separately ---- */
+        /* ---- Time the scaling ---- */
         double t_c0 = MPI_Wtime();
 
         for (long long i = 0; i < rows_this; ++i) {
@@ -374,7 +334,7 @@ static bool phase2_scale_and_write(
         compute_time += MPI_Wtime() - t_c0;
         /* ------------------------------------------- */
 
-        /* Write at the same byte offset (preserves row order) */
+        /* Write it back to the exact same offset */
         err = MPI_File_write_at(fh_out, cur_offset,
                                  block.data(), elems,
                                  MPI_DOUBLE, &status);
@@ -404,7 +364,7 @@ static bool phase2_scale_and_write(
     MPI_File_close(&fh_in);
     MPI_File_close(&fh_out);
 
-    /* Reduce wall time: report the slowest process */
+    /* Same wall time logic as phase 1 */
     double local_wall = MPI_Wtime() - t_wall_start;
     MPI_Allreduce(&local_wall, &wall_time, 1, MPI_DOUBLE, MPI_MAX, comm);
 
@@ -412,7 +372,7 @@ static bool phase2_scale_and_write(
 }
 
 /* ------------------------------------------------------------------ */
-/*  Print statistics summary (call from rank 0 only)                   */
+/* Print some stats just to make sure they look okay                 */
 /* ------------------------------------------------------------------ */
 static void print_stats(const std::vector<ColStats> &stats, long long D,
                          long long max_cols = 5)
@@ -434,7 +394,7 @@ static void print_stats(const std::vector<ColStats> &stats, long long D,
 }
 
 /* ------------------------------------------------------------------ */
-/*  main                                                                */
+/* Main                                                              */
 /* ------------------------------------------------------------------ */
 int main(int argc, char *argv[])
 {
@@ -444,7 +404,7 @@ int main(int argc, char *argv[])
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &nprocs);
 
-    /* ---- Argument parsing ---- */
+    /* ---- Parse arguments ---- */
     if (argc < 6 || argc > 7) {
         if (rank == 0)
             std::fprintf(stderr,
@@ -463,7 +423,7 @@ int main(int argc, char *argv[])
     std::string mode_str    = argv[5];
     long long   block_rows  = (argc == 7) ? std::atoll(argv[6]) : 256000LL;
 
-    /* Basic validation */
+    /* Basic sanity checks */
     if (N <= 0 || D <= 0) {
         if (rank == 0)
             std::fprintf(stderr, "[ERROR] N and D must be positive integers.\n");
@@ -477,7 +437,7 @@ int main(int argc, char *argv[])
         return EXIT_FAILURE;
     }
 
-    /* Guard against MPI count overflow (int limit for MPI element counts) */
+    /* MPI counts are 32-bit so we need to be careful with huge blocks */
     if (block_rows * D > (long long)std::numeric_limits<int>::max()) {
         if (rank == 0)
             std::fprintf(stderr,
@@ -500,14 +460,14 @@ int main(int argc, char *argv[])
         return EXIT_FAILURE;
     }
 
-    /* ---- Row-partition for this process ---- */
+    /* ---- Partition for this process ---- */
     long long my_rows, my_row_start;
     compute_partition(N, nprocs, rank, my_rows, my_row_start);
 
     double file_size_gb = (double)N * (double)D * sizeof(double) / (1 << 30);
     double block_mb     = (double)block_rows * (double)D * sizeof(double) / (1 << 20);
 
-    /* ---- Print header and partition table (rank 0) ---- */
+    /* ---- Output the configuration from rank 0 ---- */
     if (rank == 0) {
         std::printf("=== MPI Scaler ===\n");
         std::printf("  Processes:   %d\n",         nprocs);
@@ -522,7 +482,7 @@ int main(int argc, char *argv[])
         std::printf("  Row partition per process:\n");
     }
 
-    /* Sequential print so output is not interleaved */
+    /* Print out who is handling what (using barriers to keep it neat) */
     for (int r = 0; r < nprocs; ++r) {
         MPI_Barrier(MPI_COMM_WORLD);
         if (rank == r) {
@@ -539,7 +499,7 @@ int main(int argc, char *argv[])
     std::vector<ColStats> stats(static_cast<size_t>(D));
 
     /* ================================================================
-     * PHASE 1 — compute per-column statistics
+     * Phase 1
      * ================================================================ */
     if (rank == 0)
         std::printf("[Phase 1] Computing per-column statistics "
@@ -556,14 +516,14 @@ int main(int argc, char *argv[])
 
     if (rank == 0) {
         std::printf("[Phase 1] Done in %.3f s  "
-                    "(compute %.3f s, Allreduce %.3f s, I/O %.3f s)\n",
+                    "(compute %.3f s, Allreduce %.6f s, I/O %.3f s)\n",
                     wall1, compute1, comm1,
                     wall1 - compute1 - comm1);
         print_stats(stats, D);
     }
 
     /* ================================================================
-     * PHASE 2 — apply scaling and write output
+     * Phase 2
      * ================================================================ */
     if (rank == 0)
         std::printf("[Phase 2] Applying %s and writing output "
@@ -584,13 +544,13 @@ int main(int argc, char *argv[])
                     wall2, compute2, wall2 - compute2);
     }
 
-    /* ---- Timing summary (rank 0) ---- */
+    /* ---- Timing summary printed by Rank 0 ---- */
     if (rank == 0) {
         double total = wall1 + wall2;
         std::printf("\n=== Timing Summary ===\n");
         std::printf("  Processes:              %d\n", nprocs);
         std::printf("  Phase 1 Wall Time:      %.3f s"
-                    "  (Compute: %.3f s, Allreduce: %.3f s, I/O: %.3f s)\n",
+                    "  (Compute: %.3f s, Allreduce: %.6f s, I/O: %.3f s)\n",
                     wall1, compute1, comm1,
                     wall1 - compute1 - comm1);
         std::printf("  Phase 2 Wall Time:      %.3f s"

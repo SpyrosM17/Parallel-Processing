@@ -1,31 +1,14 @@
 /**
- * Scaler.cpp  —  Serial Reference Implementation
- * ------------------------------------------------
+ * Scaler_Serial.cpp
  *
- * Reads a raw binary matrix X ∈ R^{N×D} (row-major, double precision),
- * computes per-column statistics (mean, min, max, variance, std-dev),
- * then applies either StandardScaler or MinMaxScaler and writes the
- * normalised matrix to a new raw binary file.
- *
- * Processing is done block-by-block (out-of-core) so that files larger
- * than available RAM are handled correctly.
- *
- * Timing now separately reports compute time and I/O time per phase,
- * enabling a fair apples-to-apples comparison with the SIMD version.
+ * Serial baseline. Does block-by-block processing so it doesn't crash on huge 
+ * files (out-of-core). Needed this to compare speedups for the other versions.
  *
  * Usage:
- *   ./scaler input.bin output.bin N D mode [block_rows]
- *
- *   input.bin   – raw binary input  (N*D doubles, row-major)
- *   output.bin  – raw binary output (N*D doubles, row-major)
- *   N           – number of rows (samples)
- *   D           – number of columns (features)
- *   mode        – "standard"  →  StandardScaler
- *                 "minmax"    →  MinMaxScaler
- *   block_rows  – (optional) rows per I/O block; default = 256 000
+ * ./scaler input.bin output.bin N D mode [block_rows]
  *
  * Build:
- *   g++ -O2 -std=c++17 -o scaler Scaler.cpp
+ * g++ -O2 -std=c++17 -o scaler Scaler.cpp
  */
 
  #include <cstdio>
@@ -39,7 +22,7 @@
  #include <algorithm>
  
  /* ------------------------------------------------------------------ */
- /*  Wall-clock timer                                                    */
+ /* Timer                                                               */
  /* ------------------------------------------------------------------ */
  static double now_sec()
  {
@@ -48,22 +31,21 @@
  }
  
  /* ------------------------------------------------------------------ */
- /*  Per-column accumulators                                             */
+ /* Struct for stats per column                                         */
  /* ------------------------------------------------------------------ */
  struct ColStats {
      double sum;
      double sum_sq;
      double min_val;
      double max_val;
-     /* Derived (filled after full scan) */
+     /* Calculated later */
      double mean;
      double var;
      double std_dev;
  };
  
  /* ------------------------------------------------------------------ */
- /*  Phase 1 — scan the whole file in blocks, accumulate statistics     */
- /*  compute_time — time spent only in the inner accumulation loops     */
+ /* Phase 1: Read the whole file in blocks, calculate stats            */
  /* ------------------------------------------------------------------ */
  static bool phase1_compute_stats(
      const char   *input_path,
@@ -74,7 +56,7 @@
      double       &wall_time,
      double       &compute_time)
  {
-     /* Initialise accumulators */
+     /* Init stats to zero/infinity */
      for (long long j = 0; j < D; ++j) {
          stats[j].sum     = 0.0;
          stats[j].sum_sq  = 0.0;
@@ -109,7 +91,7 @@
              return false;
          }
  
-         /* ---- Compute inner loop: timed separately ---- */
+         /* ---- Timer for the actual computation ---- */
          double t_c0 = now_sec();
  
          for (long long i = 0; i < rows_this_block; ++i) {
@@ -133,7 +115,7 @@
      wall_time = now_sec() - t_wall_start;
      std::fclose(fin);
  
-     /* Derive mean, variance, std-dev from accumulators */
+     /* Calculate final stats */
      double inv_N = 1.0 / static_cast<double>(N);
      for (long long j = 0; j < D; ++j) {
          stats[j].mean    = stats[j].sum * inv_N;
@@ -146,8 +128,7 @@
  }
  
  /* ------------------------------------------------------------------ */
- /*  Phase 2 — re-read file, apply scaling, write output                */
- /*  compute_time — time spent only in the inner scaling loops          */
+ /* Phase 2: Scale it and write out to the new file                     */
  /* ------------------------------------------------------------------ */
  enum class ScalerMode { STANDARD, MINMAX };
  
@@ -209,7 +190,7 @@
              return false;
          }
  
-         /* ---- Compute inner loop: timed separately ---- */
+         /* ---- Timing the math alone ---- */
          double t_c0 = now_sec();
  
          for (long long i = 0; i < rows_this_block; ++i) {
@@ -243,7 +224,7 @@
  }
  
  /* ------------------------------------------------------------------ */
- /*  Print statistics summary                                            */
+ /* Print a summary                                                     */
  /* ------------------------------------------------------------------ */
  static void print_stats(const std::vector<ColStats> &stats, long long D,
                           long long max_cols = 5)
@@ -268,7 +249,7 @@
  }
  
  /* ------------------------------------------------------------------ */
- /*  main                                                                */
+ /* Main                                                                */
  /* ------------------------------------------------------------------ */
  int main(int argc, char *argv[])
  {
@@ -324,7 +305,7 @@
      std::vector<ColStats> stats(static_cast<size_t>(D));
  
      /* ================================================================
-      * PHASE 1 — compute statistics
+      * Phase 1
       * ================================================================ */
      std::printf("[Phase 1] Computing per-column statistics...\n");
      double wall1 = 0.0, compute1 = 0.0;
@@ -337,7 +318,7 @@
      print_stats(stats, D);
  
      /* ================================================================
-      * PHASE 2 — scale and write
+      * Phase 2
       * ================================================================ */
      std::printf("[Phase 2] Applying %s and writing output...\n", mode_str.c_str());
      double wall2 = 0.0, compute2 = 0.0;
@@ -349,7 +330,7 @@
      std::printf("[Phase 2] Done in %.3f s  (compute %.3f s, I/O %.3f s)\n",
                  wall2, compute2, wall2 - compute2);
  
-     /* ---- Overall timing ---- */
+     /* ---- Final summary ---- */
      double total = wall1 + wall2;
      std::printf("\n=== Timing Summary ===\n");
      std::printf("  Phase 1 Total Wall Time : %.3f s  (Compute: %.3f s, I/O: %.3f s)\n",

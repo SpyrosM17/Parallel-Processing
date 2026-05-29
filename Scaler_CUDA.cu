@@ -1,18 +1,15 @@
 /*
- * Scaler_CUDA.cu  —  CUDA Implementation with Double-Buffered I/O
- * -----------------------------------------------------------------
+ * Scaler_CUDA.cu
  *
- * Parallelises per-column statistics computation and block scaling using
- * NVIDIA GPUs. It heavily overlaps Disk I/O with Host-to-Device (H2D),
- * Device-to-Host (D2H) memory transfers, and GPU Kernel execution using
- * CUDA streams and double buffering with Pinned Memory.
+ * CUDA version for the project. Uses double buffering (with pinned memory and streams) 
+ * to hide the disk I/O behind the GPU computation.
  *
  * Usage:
  * ./scaler_cuda input.bin output.bin N D mode [block_rows]
  * mode: standard | minmax
  * block_rows: optional, default = 256000
  *
- * Build (Krylov100 - Tesla V100 is sm_70):
+ * Build for krylov100 (V100 GPU is sm_70):
  * module load nvhpc
  * nvcc -O3 -std=c++17 -arch=sm_70 -o scaler_cuda Scaler_CUDA.cu
  */
@@ -33,7 +30,7 @@
 #endif
 
 /* ------------------------------------------------------------------ */
-/* CUDA Error Checker Macro                                           */
+/* Macro to easily check for CUDA errors                              */
 /* ------------------------------------------------------------------ */
 #define CUDA_CHECK(call) do { \
     cudaError_t err = call; \
@@ -45,7 +42,7 @@
 } while(0)
 
 /* ------------------------------------------------------------------ */
-/* Wall-clock timer                                                   */
+/* Simple wall-clock timer                                            */
 /* ------------------------------------------------------------------ */
 static double now_sec() {
     using clk = std::chrono::steady_clock;
@@ -53,7 +50,7 @@ static double now_sec() {
 }
 
 /* ------------------------------------------------------------------ */
-/* Hint sequential access to the OS (Linux only; no-op elsewhere)     */
+/* Tell Linux we're reading sequentially to speed up disk access      */
 /* ------------------------------------------------------------------ */
 static void hint_sequential(FILE *f, long long total_bytes) {
 #ifdef __linux__
@@ -65,7 +62,7 @@ static void hint_sequential(FILE *f, long long total_bytes) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Per-column accumulators (Host)                                     */
+/* Struct for our per-column stats                                    */
 /* ------------------------------------------------------------------ */
 struct ColStats {
     double sum, sum_sq, min_val, max_val;
@@ -75,7 +72,8 @@ struct ColStats {
 enum class ScalerMode { STANDARD, MINMAX };
 
 /* ------------------------------------------------------------------ */
-/* Device Atomics for double precision MIN and MAX                    */
+/* Custom atomics. Older CUDA versions don't have built-in double     */
+/* precision min/max, so we have to use atomicCAS                     */
 /* ------------------------------------------------------------------ */
 __device__ void atomicMinDouble(double* address, double val) {
     unsigned long long int* address_as_ull = (unsigned long long int*)address;
@@ -98,7 +96,7 @@ __device__ void atomicMaxDouble(double* address, double val) {
 }
 
 /* ================================================================== */
-/* CUDA Kernels                                                       */
+/* GPU Kernels                                                        */
 /* ================================================================== */
 
 __global__ void phase1_kernel(const double* __restrict__ data,
@@ -159,7 +157,7 @@ __global__ void phase2_kernel(double* __restrict__ data,
 }
 
 /* ================================================================== */
-/* PHASE 1 — double-buffered read + GPU statistics                    */
+/* Phase 1: Read the file in chunks and calculate stats on the GPU    */
 /* ================================================================== */
 static bool phase1_compute_stats(
     const char            *input_path,
@@ -206,7 +204,7 @@ static bool phase1_compute_stats(
     CUDA_CHECK(cudaStreamCreate(&stream[0]));
     CUDA_CHECK(cudaStreamCreate(&stream[1]));
 
-    /* ---- Setup timing events per block to preserve async overlap ---- */
+    /* ---- Need separate events for each chunk because of streams ---- */
     long long total_chunks = (N + block_rows - 1) / block_rows;
     std::vector<cudaEvent_t> ev_h2d_s(total_chunks), ev_h2d_e(total_chunks);
     std::vector<cudaEvent_t> ev_ker_s(total_chunks), ev_ker_e(total_chunks);
@@ -224,7 +222,7 @@ static bool phase1_compute_stats(
     double t_wall_start = now_sec();
     io_time = 0.0;
 
-    /* ---- Prime the pump: read block 0 synchronously ---- */
+    /* ---- Read the first chunk so the pipeline can start ---- */
     double t0 = now_sec();
     if (std::fread(h_buf[0], sizeof(double), (size_t)elems_this, fin) != static_cast<size_t>(elems_this)) {
         return false;
@@ -244,7 +242,7 @@ static bool phase1_compute_stats(
     rows_remaining -= rows_this;
     int cur = 0;
 
-    /* ---- Double-buffered loop ---- */
+    /* ---- Loop through the rest of the file using both buffers ---- */
     while (rows_remaining > 0) {
         int       next       = 1 - cur;
         long long rows_next  = std::min(block_rows, rows_remaining);
@@ -276,7 +274,7 @@ static bool phase1_compute_stats(
     wall_time = now_sec() - t_wall_start;
     std::fclose(fin);
 
-    /* ---- Calculate exact GPU times ---- */
+    /* ---- Grab the actual GPU timings from the events ---- */
     gpu_h2d_time = 0.0;
     gpu_ker_time = 0.0;
     for (int i = 0; i < chunk_idx; ++i) {
@@ -290,7 +288,7 @@ static bool phase1_compute_stats(
         CUDA_CHECK(cudaEventDestroy(ev_ker_s[i])); CUDA_CHECK(cudaEventDestroy(ev_ker_e[i]));
     }
 
-    /* ---- Copy accumulators back to host and compute final stats ---- */
+    /* ---- Pull the final sums/mins/maxes back to the host ---- */
     std::vector<double> h_sum(D), h_sum_sq(D), h_min(D), h_max(D);
     CUDA_CHECK(cudaMemcpy(h_sum.data(),    d_sum,    stats_bytes, cudaMemcpyDeviceToHost));
     CUDA_CHECK(cudaMemcpy(h_sum_sq.data(), d_sum_sq, stats_bytes, cudaMemcpyDeviceToHost));
@@ -308,7 +306,7 @@ static bool phase1_compute_stats(
         stats[j].std_dev = std::sqrt(stats[j].var);
     }
 
-    /* ---- Cleanup ---- */
+    /* ---- Free the buffers ---- */
     CUDA_CHECK(cudaFreeHost(h_buf[0]));  CUDA_CHECK(cudaFreeHost(h_buf[1]));
     CUDA_CHECK(cudaFree(d_buf[0]));      CUDA_CHECK(cudaFree(d_buf[1]));
     CUDA_CHECK(cudaFree(d_sum));         CUDA_CHECK(cudaFree(d_sum_sq));
@@ -319,7 +317,7 @@ static bool phase1_compute_stats(
 }
 
 /* ================================================================== */
-/* PHASE 2 — double-buffered read + GPU scaling + write               */
+/* Phase 2: Read, apply scaling on GPU, then write out to new file    */
 /* ================================================================== */
 static bool phase2_scale_and_write(
     const char                  *input_path,
@@ -376,7 +374,7 @@ static bool phase2_scale_and_write(
     CUDA_CHECK(cudaStreamCreate(&stream[0]));
     CUDA_CHECK(cudaStreamCreate(&stream[1]));
 
-    /* ---- Setup timing events per block to preserve async overlap ---- */
+    /* ---- Event setup for Phase 2 ---- */
     long long total_chunks = (N + block_rows - 1) / block_rows;
     std::vector<cudaEvent_t> ev_h2d_s(total_chunks), ev_h2d_e(total_chunks);
     std::vector<cudaEvent_t> ev_ker_s(total_chunks), ev_ker_e(total_chunks);
@@ -396,7 +394,7 @@ static bool phase2_scale_and_write(
     double t_wall_start = now_sec();
     io_time = 0.0;
 
-    /* ---- Prime the pump ---- */
+    /* ---- Start the pipeline with the first read ---- */
     double t0 = now_sec();
     if (std::fread(h_buf[0], sizeof(double), (size_t)elems_this, fin) != static_cast<size_t>(elems_this)) {
         return false;
@@ -421,7 +419,7 @@ static bool phase2_scale_and_write(
     rows_remaining -= rows_this;
     long long rows_prev = rows_this;
 
-    /* ---- Double-buffered loop ---- */
+    /* ---- Double buffering loop for Phase 2 ---- */
     while (rows_remaining > 0) {
         int       next       = 1 - cur;
         long long rows_next  = std::min(block_rows, rows_remaining);
@@ -473,7 +471,7 @@ static bool phase2_scale_and_write(
     CUDA_CHECK(cudaDeviceSynchronize());
     wall_time = now_sec() - t_wall_start;
 
-    /* ---- Calculate exact GPU times ---- */
+    /* ---- Calculate exact GPU times again ---- */
     gpu_h2d_time = 0.0;
     gpu_ker_time = 0.0;
     gpu_d2h_time = 0.0;
@@ -491,7 +489,7 @@ static bool phase2_scale_and_write(
         CUDA_CHECK(cudaEventDestroy(ev_d2h_s[i])); CUDA_CHECK(cudaEventDestroy(ev_d2h_e[i]));
     }
 
-    /* ---- Cleanup ---- */
+    /* ---- Free the rest of the memory ---- */
     CUDA_CHECK(cudaFreeHost(h_buf[0])); CUDA_CHECK(cudaFreeHost(h_buf[1]));
     CUDA_CHECK(cudaFree(d_buf[0]));     CUDA_CHECK(cudaFree(d_buf[1]));
     CUDA_CHECK(cudaFree(d_shift));      CUDA_CHECK(cudaFree(d_scale));
@@ -503,7 +501,7 @@ static bool phase2_scale_and_write(
 }
 
 /* ------------------------------------------------------------------ */
-/* Print stats summary                                                */
+/* Print out some sample stats to verify things work                  */
 /* ------------------------------------------------------------------ */
 static void print_stats(const std::vector<ColStats> &stats, long long D, long long max_cols = 5) {
     std::printf("\n  Per-column statistics (first %lld of %lld columns shown):\n", std::min(max_cols, D), D);
@@ -517,7 +515,7 @@ static void print_stats(const std::vector<ColStats> &stats, long long D, long lo
 }
 
 /* ------------------------------------------------------------------ */
-/* main                                                               */
+/* Main execution                                                     */
 /* ------------------------------------------------------------------ */
 int main(int argc, char *argv[]) {
     if (argc < 6 || argc > 7) {
