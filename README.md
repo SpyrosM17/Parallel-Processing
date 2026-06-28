@@ -1,49 +1,61 @@
-# Παράλληλη Προεπεξεργασία Μεγάλου Όγκου Δεδομένων
+# Parallel Preprocessing of Large-Scale Data
 
-**Μάθημα:** Παράλληλη Επεξεργασία — Εαρινό Εξάμηνο 2025-2026  
-**Τμήμα:** Μηχανικών Η/Υ και Πληροφορικής, Πανεπιστήμιο Πατρών  
-**Ομάδα:** Μανταδάκης Σπυρίδων (1100613) · Ιωάννης Κώτσαλος (1100603)
-
----
-
-## Περιεχόμενα αρχείων
-
-| Αρχείο | Ρόλος |
-|---|---|
-| `Scaler_Serial.cpp` | Σειριακή έκδοση αναφοράς |
-| `Scaler_SIMD.cpp` | SIMD έκδοση με AVX2 intrinsics |
-| `Scaler_OpenMP.cpp` | Πολυνηματική έκδοση με OpenMP |
-| `Scaler_MPI.cpp` | Κατανεμημένη έκδοση με MPI |
-| `Scaler_CUDA.cu` | GPU έκδοση με CUDA |
-| `generate_data_chunks.py` | Παραγωγή συνθετικών δεδομένων |
-| `Verifier.py` | Έλεγχος ορθότητας εξόδου |
-| `Makefile` | Build, εκτέλεση, verification |
-| `run_benchmarks.sh` | Αυτοματοποιημένα πειράματα scaling |
+**Course:** Parallel Processing — Spring Semester 2025–2026
+**Department:** Department of Computer Engineering and Informatics, University of Patras
+**Team:** Spyridon Mantadakis (1100613) · Ioannis Kotsalos (1100603)
 
 ---
 
-## Απαιτήσεις
+# Project Contents
 
-### Για το cluster (krylov100 / scgroup3.ceid.upatras.gr)
-- `g++` με C++17 και AVX2 υποστήριξη
-- `mpicxx` / `mpirun`
-- `/usr/local/cuda-12.2/bin/nvcc` (sm_70 για Tesla V100)
-- Python 3 με `numpy` και `scikit-learn`
-
-### Για τοπική ανάπτυξη (Linux / macOS)
-- macOS: `brew install libomp open-mpi`
-- Η CUDA έκδοση απαιτεί κατάλληλη GPU και CUDA toolkit
+| File                      | Purpose                                       |
+| ------------------------- | --------------------------------------------- |
+| `Scaler_Serial.cpp`       | Reference serial implementation               |
+| `Scaler_SIMD.cpp`         | SIMD implementation using AVX2 intrinsics     |
+| `Scaler_OpenMP.cpp`       | Multithreaded implementation using OpenMP     |
+| `Scaler_MPI.cpp`          | Distributed implementation using MPI          |
+| `Scaler_CUDA.cu`          | GPU implementation using CUDA                 |
+| `generate_data_chunks.py` | Synthetic dataset generator                   |
+| `Verifier.py`             | Output correctness verification               |
+| `Makefile`                | Build, execution, and verification automation |
+| `run_benchmarks.sh`       | Automated OpenMP and MPI scaling experiments  |
 
 ---
 
-## Μεταγλώττιση
+# Requirements
 
-### Όλες οι εκδόσεις μαζί
+## Cluster Environment (krylov100 / scgroup3.ceid.upatras.gr)
+
+* `g++` with C++17 and AVX2 support
+* `mpicxx` / `mpirun`
+* `/usr/local/cuda-12.2/bin/nvcc` (compiled for `sm_70`, Tesla V100)
+* Python 3 with:
+
+  * `numpy`
+  * `scikit-learn`
+
+## Local Development (Linux / macOS)
+
+* **macOS:** Install dependencies using:
+
+```bash
+brew install libomp open-mpi
+```
+
+* The CUDA implementation requires a compatible NVIDIA GPU and CUDA Toolkit.
+
+---
+
+# Compilation
+
+## Build All Implementations
+
 ```bash
 make build
 ```
 
-### Μεμονωμένες εκδόσεις
+## Build Individual Implementations
+
 ```bash
 make scaler_serial
 make scaler_simd
@@ -52,33 +64,54 @@ make scaler_mpi
 make scaler_cuda
 ```
 
-### Άμεση μεταγλώττιση χωρίς Makefile
+## Manual Compilation
+
 ```bash
 g++ -std=c++17 -O2 -Wall -o scaler_serial Scaler_Serial.cpp
-g++ -std=c++17 -O3 -Wall -mavx2 -mfma -march=native -pthread -o scaler_simd Scaler_SIMD.cpp
-g++ -std=c++17 -O3 -Wall -fopenmp -o scaler_openmp Scaler_OpenMP.cpp
-mpicxx -std=c++17 -O3 -Wall -o scaler_mpi Scaler_MPI.cpp
-/usr/local/cuda-12.2/bin/nvcc -std=c++17 -O3 -arch=sm_70 -o scaler_cuda Scaler_CUDA.cu
+
+g++ -std=c++17 -O3 -Wall -mavx2 -mfma -march=native -pthread \
+    -o scaler_simd Scaler_SIMD.cpp
+
+g++ -std=c++17 -O3 -Wall -fopenmp \
+    -o scaler_openmp Scaler_OpenMP.cpp
+
+mpicxx -std=c++17 -O3 -Wall \
+    -o scaler_mpi Scaler_MPI.cpp
+
+/usr/local/cuda-12.2/bin/nvcc -std=c++17 -O3 -arch=sm_70 \
+    -o scaler_cuda Scaler_CUDA.cu
 ```
 
 ---
 
-## Παραγωγή δεδομένων
+# Dataset Generation
 
-Το `generate_data_chunks.py` παράγει raw binary αρχεία με συνθετικά δεδομένα σε chunks, ώστε να αποφεύγεται υπερφόρτωση μνήμης.
+The `generate_data_chunks.py` script generates large synthetic datasets in raw binary format using chunked processing, avoiding excessive memory usage during generation.
+
+## Using the Makefile
+
+Default configuration:
+
+* `N = 5,000,000`
+* `D = 64`
 
 ```bash
-# Μέσω Makefile (default: N=5000000, D=64)
 make gen-data
+```
 
-# Παραμετρικά
+Custom configurations:
+
+```bash
 make gen-data N=1000000  D=32  INPUT_DATA=data_1000000_32.bin   DTYPE=float64 SEED=42
+
 make gen-data N=5000000  D=64  INPUT_DATA=data_5000000_64.bin   DTYPE=float64 SEED=42
+
 make gen-data N=10000000 D=128 INPUT_DATA=data_10000000_128.bin DTYPE=float64 SEED=42
 ```
 
+## Running the Python Script Directly
+
 ```bash
-# Άμεσα με Python
 python3 generate_data_chunks.py \
     --samples 10000000 \
     --features 128 \
@@ -89,114 +122,240 @@ python3 generate_data_chunks.py \
 
 ---
 
-## Εκτέλεση εκδόσεων
+# Running the Implementations
 
-Κοινές παράμετροι: `input.bin output.bin N D mode [block_rows]`  
-`mode`: `standard` (StandardScaler) ή `minmax` (MinMaxScaler)
+Common command-line arguments:
 
-### Σειριακή
-```bash
-make run-serial N=5000000 D=64 INPUT_DATA=data_5000000_64.bin \
-    OUT_DATA=out_serial.bin MODE=standard BLOCKS=256000
-
-# Ή άμεσα
-./scaler_serial data_5000000_64.bin out_serial.bin 5000000 64 standard 256000
+```
+input.bin output.bin N D mode [block_rows]
 ```
 
-### SIMD
-```bash
-make run-simd N=5000000 D=64 INPUT_DATA=data_5000000_64.bin \
-    OUT_DATA=out_simd.bin MODE=standard BLOCKS=256000
+where
 
-./scaler_simd data_5000000_64.bin out_simd.bin 5000000 64 standard 256000
+* `mode = standard` → StandardScaler
+* `mode = minmax` → MinMaxScaler
+
+---
+
+## Serial Version
+
+```bash
+make run-serial \
+    N=5000000 D=64 \
+    INPUT_DATA=data_5000000_64.bin \
+    OUT_DATA=out_serial.bin \
+    MODE=standard \
+    BLOCKS=256000
 ```
 
-### OpenMP
+or
+
 ```bash
-# OMP_THREADS ελέγχει τον αριθμό νημάτων
-make run-openmp OMP_THREADS=8 N=5000000 D=64 INPUT_DATA=data_5000000_64.bin \
-    OUT_DATA=out_openmp.bin MODE=standard BLOCKS=256000
-
-OMP_NUM_THREADS=8 ./scaler_openmp data_5000000_64.bin out_openmp.bin 5000000 64 standard 256000
-```
-
-### MPI
-```bash
-# NP ελέγχει τον αριθμό processes
-make run-mpi NP=8 N=5000000 D=64 INPUT_DATA=data_5000000_64.bin \
-    OUT_DATA=out_mpi.bin MODE=standard BLOCKS=256000
-
-mpirun -np 8 ./scaler_mpi data_5000000_64.bin out_mpi.bin 5000000 64 standard 256000
-```
-
-### CUDA
-```bash
-make run-cuda N=5000000 D=64 INPUT_DATA=data_5000000_64.bin \
-    OUT_DATA=out_cuda.bin MODE=standard BLOCKS=256000
-
-./scaler_cuda data_5000000_64.bin out_cuda.bin 5000000 64 standard 256000
+./scaler_serial \
+    data_5000000_64.bin \
+    out_serial.bin \
+    5000000 \
+    64 \
+    standard \
+    256000
 ```
 
 ---
 
-## Έλεγχος ορθότητας
-
-Το `Verifier.py` συγκρίνει streaming το output αρχείο με το reference της NumPy και αναφέρει max/mean absolute error.
+## SIMD Version
 
 ```bash
-# Μέσω Makefile
-make verify N=5000000 D=64 INPUT_DATA=data_5000000_64.bin \
-    OUT_DATA=out_serial.bin MODE=standard DTYPE=float64 BLOCKS=256000
+make run-simd \
+    N=5000000 D=64 \
+    INPUT_DATA=data_5000000_64.bin \
+    OUT_DATA=out_simd.bin \
+    MODE=standard \
+    BLOCKS=256000
+```
 
-# Άμεσα
+or
+
+```bash
+./scaler_simd \
+    data_5000000_64.bin \
+    out_simd.bin \
+    5000000 \
+    64 \
+    standard \
+    256000
+```
+
+---
+
+## OpenMP Version
+
+The number of threads is controlled through `OMP_THREADS`.
+
+```bash
+make run-openmp \
+    OMP_THREADS=8 \
+    N=5000000 D=64 \
+    INPUT_DATA=data_5000000_64.bin \
+    OUT_DATA=out_openmp.bin \
+    MODE=standard \
+    BLOCKS=256000
+```
+
+or
+
+```bash
+OMP_NUM_THREADS=8 \
+./scaler_openmp \
+    data_5000000_64.bin \
+    out_openmp.bin \
+    5000000 \
+    64 \
+    standard \
+    256000
+```
+
+---
+
+## MPI Version
+
+The number of MPI processes is controlled through `NP`.
+
+```bash
+make run-mpi \
+    NP=8 \
+    N=5000000 D=64 \
+    INPUT_DATA=data_5000000_64.bin \
+    OUT_DATA=out_mpi.bin \
+    MODE=standard \
+    BLOCKS=256000
+```
+
+or
+
+```bash
+mpirun -np 8 \
+./scaler_mpi \
+    data_5000000_64.bin \
+    out_mpi.bin \
+    5000000 \
+    64 \
+    standard \
+    256000
+```
+
+---
+
+## CUDA Version
+
+```bash
+make run-cuda \
+    N=5000000 D=64 \
+    INPUT_DATA=data_5000000_64.bin \
+    OUT_DATA=out_cuda.bin \
+    MODE=standard \
+    BLOCKS=256000
+```
+
+or
+
+```bash
+./scaler_cuda \
+    data_5000000_64.bin \
+    out_cuda.bin \
+    5000000 \
+    64 \
+    standard \
+    256000
+```
+
+---
+
+# Correctness Verification
+
+`Verifier.py` compares the generated output against the NumPy reference implementation using streaming I/O and reports:
+
+* Maximum absolute error
+* Mean absolute error
+
+## Using the Makefile
+
+```bash
+make verify \
+    N=5000000 \
+    D=64 \
+    INPUT_DATA=data_5000000_64.bin \
+    OUT_DATA=out_serial.bin \
+    MODE=standard \
+    DTYPE=float64 \
+    BLOCKS=256000
+```
+
+## Running Directly
+
+```bash
 python3 Verifier.py \
-    --input  data_5000000_64.bin \
+    --input data_5000000_64.bin \
     --cpp-output out_serial.bin \
-    --N 5000000 --D 64 \
+    --N 5000000 \
+    --D 64 \
     --mode standard \
     --dtype float64 \
     --block-rows 256000
 ```
 
-Το script εκτυπώνει `PASS` αν το max absolute error είναι κάτω από `1e-9`.
+The script prints **`PASS`** when the maximum absolute error is below:
+
+```text
+1e-9
+```
 
 ---
 
-## Αυτοματοποιημένα πειράματα scaling
+# Automated Scaling Benchmarks
 
-Το `run_benchmarks.sh` εκτελεί όλα τα πειράματα OpenMP και MPI scaling που παρουσιάζονται στην αναφορά.
+The `run_benchmarks.sh` script executes all OpenMP and MPI scaling experiments presented in the accompanying report.
 
 ```bash
 chmod +x run_benchmarks.sh
+
 ./run_benchmarks.sh
 ```
 
-Αναμένει ότι τα αρχεία δεδομένων υπάρχουν ήδη (δημιουργήστε τα πρώτα με `make gen-data`).  
-Τα αποτελέσματα εκτυπώνονται στο stdout και αποθηκεύονται στο `benchmark_results.log`.
+The script assumes that the required input datasets have already been generated (using `make gen-data`).
+
+Benchmark results are:
+
+* printed to the terminal (`stdout`),
+* saved to `benchmark_results.log`.
 
 ---
 
-## Παράμετροι Makefile
+# Makefile Parameters
 
-| Μεταβλητή | Default | Περιγραφή |
-|---|---|---|
-| `N` | `5000000` | Αριθμός γραμμών |
-| `D` | `64` | Αριθμός στηλών |
-| `MODE` | `standard` | `standard` ή `minmax` |
-| `BLOCKS` | `256000` | Γραμμές ανά block |
-| `INPUT_DATA` | `data_N_D.bin` | Αρχείο εισόδου |
-| `OUT_DATA` | `out_N_D_MODE.bin` | Αρχείο εξόδου |
-| `NP` | `1` | Αριθμός MPI processes |
-| `OMP_THREADS` | `1` | Αριθμός OpenMP νημάτων |
-| `DTYPE` | `float64` | Τύπος δεδομένων για verify |
-| `SEED` | `42` | Seed για παραγωγή δεδομένων |
+| Variable      | Default            | Description                             |
+| ------------- | ------------------ | --------------------------------------- |
+| `N`           | `5000000`          | Number of samples (rows)                |
+| `D`           | `64`               | Number of features (columns)            |
+| `MODE`        | `standard`         | Scaling method (`standard` or `minmax`) |
+| `BLOCKS`      | `256000`           | Number of rows processed per block      |
+| `INPUT_DATA`  | `data_N_D.bin`     | Input dataset                           |
+| `OUT_DATA`    | `out_N_D_MODE.bin` | Output file                             |
+| `NP`          | `1`                | Number of MPI processes                 |
+| `OMP_THREADS` | `1`                | Number of OpenMP threads                |
+| `DTYPE`       | `float64`          | Data type used during verification      |
+| `SEED`        | `42`               | Random seed for dataset generation      |
 
 ---
 
-## Καθαρισμός
+# Cleaning the Project
 
 ```bash
 make clean
 ```
 
-Διαγράφει τα εκτελέσιμα και τα `out_*.bin` αρχεία. Τα αρχεία δεδομένων εισόδου **δεν** διαγράφονται.
+This command removes:
+
+* all compiled executables,
+* all `out_*.bin` output files.
+
+The generated input datasets (`data_*.bin`) are **not** deleted.
